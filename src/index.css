@@ -1,0 +1,91 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-serif-sc: 'Noto Serif SC', 'Songti SC', 'STSong', 'SimSun', serif;
+  --color-ink-950: #04050c;
+  --color-ink-900: #0a0c18;
+  --color-ink-800: #131629;
+  --color-ink-700: #1e2238;
+  --color-ink-400: #6b7190;
+  --color-ink-200: #b8bdd4;
+  --color-ink-100: #dde0ee;
+  --color-moon: #e8e4d8;
+  --color-gold: #e8c268;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--color-ink-950);
+  color: var(--color-ink-100);
+  font-family: var(--font-serif-sc);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Panels & scrollbars */
+.panel {
+  background: color-mix(in srgb, var(--color-ink-900) 82%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid color-mix(in srgb, var(--color-ink-200) 12%, transparent);
+  box-shadow: 0 8px 40px rgb(0 0 0 / 0.45);
+}
+
+.thin-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-ink-700);
+  border-radius: 3px;
+}
+.thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Graph tooltip (rendered by force-graph into .scene-tooltip) */
+.scene-tooltip {
+  font-family: var(--font-serif-sc) !important;
+  color: var(--color-moon) !important;
+  background: rgb(10 12 24 / 0.85);
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgb(184 189 212 / 0.15);
+  font-size: 13px;
+  letter-spacing: 0.05em;
+}
+
+@keyframes fade-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.animate-panel-in {
+  animation: fade-slide-in 0.28s ease-out;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.animate-fade-in {
+  animation: fade-in 0.4s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-panel-in,
+  .animate-fade-in {
+    animation: none;
+  }
+}

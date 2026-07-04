@@ -116,7 +116,46 @@ function makeNebulaTexture(): THREE.Texture {
   return tex;
 }
 
+/** 4-point diffraction-spike star, like bright foreground stars in astrophotos. */
+function makeSpikeStarTexture(): THREE.Texture {
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  ctx.globalCompositeOperation = 'lighter';
+  const drawArm = (rot: number, len: number, thin: number) => {
+    ctx.save();
+    ctx.translate(size / 2, size / 2);
+    ctx.rotate(rot);
+    ctx.scale(1, thin);
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, len);
+    g.addColorStop(0, 'rgba(255,255,255,0.95)');
+    g.addColorStop(0.4, 'rgba(255,255,255,0.25)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, len, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  };
+  drawArm(0, size * 0.48, 0.035);
+  drawArm(Math.PI / 2, size * 0.48, 0.035);
+  // soft core glow
+  const core = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size * 0.12);
+  core.addColorStop(0, 'rgba(255,255,255,1)');
+  core.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = core;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 const STAR_TINTS = ['#dfe6ff', '#aebfff', '#fff2d0', '#ffd9a0', '#9aa3c7'];
+// star-dust tints: milky silver-blue body + occasional pink HII / warm gold
+const DUST_BASE = new THREE.Color('#cdd8f4');
+const DUST_PINK = new THREE.Color('#e79ac4');
+const DUST_WARM = new THREE.Color('#f2ddb0');
 
 /** Random star positions on a shell, with per-vertex warm/cool tints. */
 function makeStarField(
@@ -193,8 +232,8 @@ function StarMapInner({
     if (!fg) return;
     if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__fg = fg;
 
-    // Soft glow around bright cores only — high threshold keeps links/fog dark.
-    const bloom = new UnrealBloomPass(new THREE.Vector2(1024, 1024), 0.8, 0.5, 0.2);
+    // Soft, luminous astrophoto glow.
+    const bloom = new UnrealBloomPass(new THREE.Vector2(1024, 1024), 0.9, 0.65, 0.15);
     fg.postProcessingComposer().addPass(bloom);
 
     const scene = fg.scene();
@@ -207,7 +246,7 @@ function StarMapInner({
 
     // Two starfield layers: countless faint pinpricks + a sparse layer of
     // soft glowing stars, both tinted warm/cool so the sky feels alive.
-    const far = makeStarField(2600, 1500, 3400);
+    const far = makeStarField(4200, 1500, 3400);
     const farGeo = new THREE.BufferGeometry();
     farGeo.setAttribute('position', new THREE.BufferAttribute(far.positions, 3));
     farGeo.setAttribute('color', new THREE.BufferAttribute(far.colors, 3));
@@ -240,6 +279,35 @@ function StarMapInner({
     sceneObjects.push(farStars, nearStars);
     disposables.push(farGeo, farMat, nearGeo, nearMat);
     scene.add(farStars, nearStars);
+
+    // A handful of bright foreground stars with diffraction spikes.
+    const spikeTexture = makeSpikeStarTexture();
+    disposables.push(spikeTexture);
+    const spikeTints = ['#ffffff', '#dfe8ff', '#cfd9ff', '#fff0d8'];
+    for (let i = 0; i < 14; i++) {
+      const r = 750 + Math.random() * 1300;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      const mat = new THREE.SpriteMaterial({
+        map: spikeTexture,
+        color: spikeTints[Math.floor(Math.random() * spikeTints.length)],
+        transparent: true,
+        opacity: 0.55 + Math.random() * 0.4,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const s = new THREE.Sprite(mat);
+      const scale = 40 + Math.random() * 65;
+      s.scale.set(scale, scale, 1);
+      s.position.set(
+        r * Math.sin(phi) * Math.cos(theta),
+        r * Math.sin(phi) * Math.sin(theta),
+        r * Math.cos(phi),
+      );
+      scene.add(s);
+      sceneObjects.push(s);
+      disposables.push(mat);
+    }
 
     // Container for per-community nebula clouds (rebuilt on engine stop).
     const nebulaGroup = new THREE.Group();
@@ -343,6 +411,8 @@ function StarMapInner({
   // --- imperative highlight styling (no object rebuild) ---------------------
   useEffect(() => {
     const hasSelection = highlightNodeIds.size > 0;
+    // fade the galaxy dressing away while a selection is active
+    if (nebulaGroupRef.current) nebulaGroupRef.current.visible = !hasSelection;
     for (const [id, v] of visualsRef.current) {
       const isLit = highlightNodeIds.has(id);
       const isSelected = id === selectedNodeId;
@@ -456,15 +526,19 @@ function StarMapInner({
     };
   }, [apiRef, fitCameraToGraph]);
 
-  // Rebuild the community nebula clouds around the settled node positions.
+  // Rebuild the galaxy dressing around the settled node positions:
+  // per-community star-dust particle clouds + gauze wisps, and a warm
+  // "galactic core" glow at the overall centroid — the granular, milky look
+  // of a real spiral-galaxy astrophoto.
   const rebuildNebulae = useCallback(() => {
     const group = nebulaGroupRef.current;
     if (!group) return;
-    // clear previous clouds
+    // clear previous clouds (sprites + dust point clouds)
     for (const child of [...group.children]) {
       group.remove(child);
-      const mat = (child as THREE.Sprite).material;
-      mat?.dispose();
+      const mat = (child as THREE.Sprite | THREE.Points).material;
+      if (mat && !Array.isArray(mat)) mat.dispose();
+      (child as THREE.Points).geometry?.dispose?.();
     }
     // gather per-community positions
     const byGroup = new Map<number, PoetNode[]>();
@@ -472,6 +546,10 @@ function StarMapInner({
       if (!byGroup.has(v.node.group)) byGroup.set(v.node.group, []);
       byGroup.get(v.node.group)!.push(v.node);
     }
+
+    let gx = 0, gy = 0, gz = 0, gn = 0;
+    const tmp = new THREE.Color();
+
     for (const [gid, members] of byGroup) {
       if (members.length < 4) continue;
       let mx = 0, my = 0, mz = 0;
@@ -483,23 +561,63 @@ function StarMapInner({
       mx /= members.length;
       my /= members.length;
       mz /= members.length;
+      gx += mx; gy += my; gz += mz; gn++;
       let vSum = 0;
       for (const n of members) {
         vSum += (n.x! - mx) ** 2 + (n.y! - my) ** 2 + (n.z! - mz) ** 2;
       }
       const spread = Math.sqrt(vSum / members.length) || 60;
-      const color = new THREE.Color(groupColor.get(gid) ?? '#8ecae6');
+      const color = new THREE.Color(groupColor.get(gid) ?? '#b8c8ea');
 
-      // one broad cloud at the centre + two smaller wisps offset around it
+      // --- star dust: hundreds of tiny grains scattered around the members,
+      // so the "gas" is actually made of stars, like a real galaxy arm.
+      const dustCount = Math.min(1500, members.length * 13);
+      const dPos = new Float32Array(dustCount * 3);
+      const dCol = new Float32Array(dustCount * 3);
+      const sigma = spread * 0.5;
+      for (let i = 0; i < dustCount; i++) {
+        const seed = members[Math.floor(Math.random() * members.length)];
+        const g1 = () => (Math.random() + Math.random() + Math.random() - 1.5) * sigma;
+        dPos[i * 3] = (seed.x ?? 0) + g1();
+        dPos[i * 3 + 1] = (seed.y ?? 0) + g1();
+        dPos[i * 3 + 2] = (seed.z ?? 0) + g1();
+        const roll = Math.random();
+        if (roll < 0.06) tmp.copy(DUST_PINK);
+        else if (roll < 0.12) tmp.copy(DUST_WARM);
+        else tmp.copy(DUST_BASE).lerp(color, 0.4);
+        tmp.multiplyScalar(0.35 + Math.random() * 0.65);
+        dCol[i * 3] = tmp.r;
+        dCol[i * 3 + 1] = tmp.g;
+        dCol[i * 3 + 2] = tmp.b;
+      }
+      const dustGeo = new THREE.BufferGeometry();
+      dustGeo.setAttribute('position', new THREE.BufferAttribute(dPos, 3));
+      dustGeo.setAttribute('color', new THREE.BufferAttribute(dCol, 3));
+      const dustMat = new THREE.PointsMaterial({
+        size: 2.6,
+        map: haloTexture,
+        vertexColors: true,
+        sizeAttenuation: true,
+        transparent: true,
+        opacity: 0.62,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const dust = new THREE.Points(dustGeo, dustMat);
+      dust.renderOrder = -1;
+      group.add(dust);
+
+      // --- gauze wisps: silvery-blue regardless of community, faint
+      const wispColor = color.clone().lerp(new THREE.Color('#aebfe8'), 0.55);
       const cloudSpecs = [
-        { scale: spread * 3.4 + 90, opacity: 0.11, off: 0 },
-        { scale: spread * 2.2 + 60, opacity: 0.08, off: spread * 0.75 },
-        { scale: spread * 1.8 + 50, opacity: 0.06, off: spread * 0.75 },
+        { scale: spread * 3.2 + 90, opacity: 0.09, off: 0 },
+        { scale: spread * 2.1 + 60, opacity: 0.06, off: spread * 0.75 },
+        { scale: spread * 1.7 + 50, opacity: 0.05, off: spread * 0.75 },
       ];
       for (const spec of cloudSpecs) {
         const mat = new THREE.SpriteMaterial({
           map: nebulaTexture,
-          color: color.clone().lerp(WHITE, 0.12),
+          color: wispColor,
           transparent: true,
           opacity: spec.opacity,
           depthWrite: false,
@@ -517,7 +635,32 @@ function StarMapInner({
         group.add(sprite);
       }
     }
-  }, [groupColor, nebulaTexture]);
+
+    // --- warm galactic-core glow at the centroid of everything
+    if (gn > 0) {
+      gx /= gn; gy /= gn; gz /= gn;
+      const coreSpecs = [
+        { color: '#fff3dc', scale: 620, opacity: 0.14 },
+        { color: '#ffffff', scale: 330, opacity: 0.1 },
+      ];
+      for (const spec of coreSpecs) {
+        const mat = new THREE.SpriteMaterial({
+          map: nebulaTexture,
+          color: spec.color,
+          transparent: true,
+          opacity: spec.opacity,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          rotation: Math.random() * Math.PI,
+        });
+        const sprite = new THREE.Sprite(mat);
+        sprite.position.set(gx, gy, gz);
+        sprite.scale.set(spec.scale, spec.scale, 1);
+        sprite.renderOrder = -2;
+        group.add(sprite);
+      }
+    }
+  }, [groupColor, nebulaTexture, haloTexture]);
 
   // Glide the camera to frame the whole constellation after the first layout,
   // and (re)paint the nebula clouds every time the layout settles.

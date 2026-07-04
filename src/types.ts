@@ -57,11 +57,11 @@ export function endpointId(end: string | PoetNode): string {
 }
 
 export const RELATION_COLORS: Record<RelationType, string> = {
-  赠诗: '#e8c268',
-  唱和: '#6fd3c7',
-  送别: '#7da7d9',
-  悼亡: '#b8a9e0',
-  提及: '#8a8fa3',
+  赠诗: '#ddc490',
+  唱和: '#96d0c6',
+  送别: '#93b3dc',
+  悼亡: '#bcb0dd',
+  提及: '#9099ad',
 };
 
 export const RELATION_LABELS: Record<RelationType, string> = {

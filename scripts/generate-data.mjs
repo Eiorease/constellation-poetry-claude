@@ -32,17 +32,19 @@ const gauss = () => (rand() + rand() + rand() - 1.5) / 1.5; // ~[-1,1], center-w
 // ---------------------------------------------------------------------------
 // Communities
 // ---------------------------------------------------------------------------
+// Milky, desaturated astrophoto palette: silvery blues with faint warm/pink
+// accents, so clusters read like regions of one galaxy instead of candy blobs.
 const GROUPS = [
-  { id: 0, name: '建安·魏晋', color: '#8ecae6' },
-  { id: 1, name: '初唐', color: '#a8dadc' },
-  { id: 2, name: '盛唐·山水田园', color: '#80ed99' },
-  { id: 3, name: '盛唐·边塞', color: '#f4a261' },
-  { id: 4, name: '李杜交游', color: '#ffd166' },
-  { id: 5, name: '中唐·元白', color: '#e07a9b' },
-  { id: 6, name: '中唐·韩孟', color: '#c77dff' },
-  { id: 7, name: '晚唐', color: '#f77f00' },
-  { id: 8, name: '北宋', color: '#64dfdf' },
-  { id: 9, name: '南宋', color: '#90e0ef' },
+  { id: 0, name: '建安·魏晋', color: '#b8c8ea' },
+  { id: 1, name: '初唐', color: '#c9d5f2' },
+  { id: 2, name: '盛唐·山水田园', color: '#b7dcd2' },
+  { id: 3, name: '盛唐·边塞', color: '#e8cfae' },
+  { id: 4, name: '李杜交游', color: '#f2e3bd' },
+  { id: 5, name: '中唐·元白', color: '#e5bcd2' },
+  { id: 6, name: '中唐·韩孟', color: '#cfc2ea' },
+  { id: 7, name: '晚唐', color: '#e2c6b3' },
+  { id: 8, name: '北宋', color: '#b5cfe8' },
+  { id: 9, name: '南宋', color: '#c5dcea' },
 ];
 
 // Cluster centres roughly on a sphere so communities read as nebulae.

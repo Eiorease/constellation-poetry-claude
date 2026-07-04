@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import ForceGraph3D, { type ForceGraphMethods } from 'react-force-graph-3d';
 import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import type { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import SpriteText from 'three-spritetext';
 import {
   endpointId,
@@ -65,6 +66,84 @@ function makeHaloTexture(): THREE.Texture {
   return tex;
 }
 
+/** Deep-space backdrop: a subtle radial gradient rendered as scene.background. */
+function makeSpaceBackgroundTexture(): THREE.Texture {
+  const size = 512;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const g = ctx.createRadialGradient(size * 0.5, size * 0.42, 0, size * 0.5, size * 0.42, size * 0.75);
+  g.addColorStop(0, '#0b1026');
+  g.addColorStop(0.4, '#060a1a');
+  g.addColorStop(0.75, '#030510');
+  g.addColorStop(1, '#010208');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/** Wispy cloud texture for nebula sprites: layered soft blobs inside a radial mask. */
+function makeNebulaTexture(): THREE.Texture {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const blobs = 16;
+  for (let i = 0; i < blobs; i++) {
+    // gaussian-ish placement around the centre
+    const cx = size / 2 + (Math.random() + Math.random() - 1) * size * 0.28;
+    const cy = size / 2 + (Math.random() + Math.random() - 1) * size * 0.28;
+    const r = size * (0.1 + Math.random() * 0.24);
+    const a = 0.05 + Math.random() * 0.12;
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    g.addColorStop(0, `rgba(255,255,255,${a})`);
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, size, size);
+  }
+  // fade everything out toward the edges so sprites never show a hard border
+  ctx.globalCompositeOperation = 'destination-in';
+  const mask = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  mask.addColorStop(0, 'rgba(255,255,255,1)');
+  mask.addColorStop(0.65, 'rgba(255,255,255,0.55)');
+  mask.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = mask;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+const STAR_TINTS = ['#dfe6ff', '#aebfff', '#fff2d0', '#ffd9a0', '#9aa3c7'];
+
+/** Random star positions on a shell, with per-vertex warm/cool tints. */
+function makeStarField(
+  count: number,
+  rMin: number,
+  rMax: number,
+): { positions: Float32Array; colors: Float32Array } {
+  const positions = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 3);
+  const c = new THREE.Color();
+  for (let i = 0; i < count; i++) {
+    const r = rMin + Math.random() * (rMax - rMin);
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+    positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+    positions[i * 3 + 2] = r * Math.cos(phi);
+    c.set(STAR_TINTS[Math.floor(Math.random() * STAR_TINTS.length)]);
+    // vary brightness so the field doesn't look uniform
+    c.multiplyScalar(0.45 + Math.random() * 0.55);
+    colors[i * 3] = c.r;
+    colors[i * 3 + 1] = c.g;
+    colors[i * 3 + 2] = c.b;
+  }
+  return { positions, colors };
+}
+
 interface NodeVisual {
   node: PoetNode;
   sphereMat: THREE.MeshBasicMaterial;
@@ -97,7 +176,9 @@ function StarMapInner({
 }: Props) {
   const fgRef = useRef<ForceGraphMethods<PoetNode, PoemLink> | undefined>(undefined);
   const visualsRef = useRef<Map<string, NodeVisual>>(new Map());
+  const nebulaGroupRef = useRef<THREE.Group | null>(null);
   const haloTexture = useMemo(makeHaloTexture, []);
+  const nebulaTexture = useMemo(makeNebulaTexture, []);
   const groupColor = useMemo(() => {
     const m = new Map<number, string>();
     groups.forEach((g) => m.set(g.id, g.color));
@@ -112,35 +193,69 @@ function StarMapInner({
     if (!fg) return;
     if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__fg = fg;
 
-    const bloom = new UnrealBloomPass(new THREE.Vector2(1024, 1024), 0.75, 0.35, 0.12);
+    // Soft glow around bright cores only — high threshold keeps links/fog dark.
+    const bloom = new UnrealBloomPass(new THREE.Vector2(1024, 1024), 0.8, 0.5, 0.2);
     fg.postProcessingComposer().addPass(bloom);
 
     const scene = fg.scene();
-    scene.fog = new THREE.FogExp2(0x04050c, 0.00012);
+    const backdrop = makeSpaceBackgroundTexture();
+    scene.background = backdrop;
+    scene.fog = new THREE.FogExp2(0x030510, 0.00012);
 
-    // Distant starfield particles.
-    const starCount = 1600;
-    const positions = new Float32Array(starCount * 3);
-    for (let i = 0; i < starCount; i++) {
-      const r = 1200 + Math.random() * 1800;
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1);
-      positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-      positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-      positions[i * 3 + 2] = r * Math.cos(phi);
-    }
-    const starGeo = new THREE.BufferGeometry();
-    starGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    const starMat = new THREE.PointsMaterial({
-      color: 0x9aa3c7,
-      size: 1.6,
+    const disposables: { dispose: () => void }[] = [backdrop];
+    const sceneObjects: THREE.Object3D[] = [];
+
+    // Two starfield layers: countless faint pinpricks + a sparse layer of
+    // soft glowing stars, both tinted warm/cool so the sky feels alive.
+    const far = makeStarField(2600, 1500, 3400);
+    const farGeo = new THREE.BufferGeometry();
+    farGeo.setAttribute('position', new THREE.BufferAttribute(far.positions, 3));
+    farGeo.setAttribute('color', new THREE.BufferAttribute(far.colors, 3));
+    const farMat = new THREE.PointsMaterial({
+      size: 1.3,
+      vertexColors: true,
       sizeAttenuation: true,
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.85,
       depthWrite: false,
     });
-    const stars = new THREE.Points(starGeo, starMat);
-    scene.add(stars);
+    const farStars = new THREE.Points(farGeo, farMat);
+
+    const near = makeStarField(500, 900, 2200);
+    const nearGeo = new THREE.BufferGeometry();
+    nearGeo.setAttribute('position', new THREE.BufferAttribute(near.positions, 3));
+    nearGeo.setAttribute('color', new THREE.BufferAttribute(near.colors, 3));
+    const nearMat = new THREE.PointsMaterial({
+      size: 7,
+      map: haloTexture,
+      vertexColors: true,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const nearStars = new THREE.Points(nearGeo, nearMat);
+
+    sceneObjects.push(farStars, nearStars);
+    disposables.push(farGeo, farMat, nearGeo, nearMat);
+    scene.add(farStars, nearStars);
+
+    // Container for per-community nebula clouds (rebuilt on engine stop).
+    const nebulaGroup = new THREE.Group();
+    nebulaGroup.renderOrder = -2;
+    scene.add(nebulaGroup);
+    sceneObjects.push(nebulaGroup);
+    nebulaGroupRef.current = nebulaGroup;
+
+    // Cinematic slow drift: auto-rotate until the user takes the controls.
+    const controls = fg.controls() as OrbitControls;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.35;
+    const stopAutoRotate = () => {
+      controls.autoRotate = false;
+    };
+    controls.addEventListener('start', stopAutoRotate);
 
     // Start far out; we glide in with zoomToFit once the layout settles.
     fg.cameraPosition({ x: 0, y: 0, z: DEFAULT_CAMERA_DISTANCE * 2.4 });
@@ -161,11 +276,14 @@ function StarMapInner({
     return () => {
       clearTimeout(kickTimer);
       document.removeEventListener('visibilitychange', onVisible);
+      controls.removeEventListener('start', stopAutoRotate);
       fg.postProcessingComposer().removePass(bloom);
-      scene.remove(stars);
-      starGeo.dispose();
-      starMat.dispose();
+      scene.background = null;
+      nebulaGroupRef.current = null;
+      for (const obj of sceneObjects) scene.remove(obj);
+      for (const d of disposables) d.dispose();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // --- link force: stronger relationship => shorter link -------------------
@@ -199,7 +317,7 @@ function StarMapInner({
         blending: THREE.AdditiveBlending,
       });
       const halo = new THREE.Sprite(haloMat);
-      halo.scale.set(r * 7, r * 7, 1);
+      halo.scale.set(r * 8.5, r * 8.5, 1);
       g.add(halo);
 
       const label = new SpriteText(node.name, 3.6, '#dde0ee');
@@ -278,8 +396,9 @@ function StarMapInner({
           ? hexToRgba(base, 0.9)
           : hexToRgba(base, 0.03);
       }
-      // brighter with weight
-      return hexToRgba(base, 0.05 + (l.weight / 10) * 0.28);
+      // brighter with weight; kept faint so clusters read as glowing gas,
+      // not a wireframe mesh
+      return hexToRgba(base, 0.03 + (l.weight / 10) * 0.2);
     },
     [selectionActive, highlightLinkKeys, selectedLink],
   );
@@ -337,13 +456,78 @@ function StarMapInner({
     };
   }, [apiRef, fitCameraToGraph]);
 
-  // Glide the camera to frame the whole constellation after the first layout.
+  // Rebuild the community nebula clouds around the settled node positions.
+  const rebuildNebulae = useCallback(() => {
+    const group = nebulaGroupRef.current;
+    if (!group) return;
+    // clear previous clouds
+    for (const child of [...group.children]) {
+      group.remove(child);
+      const mat = (child as THREE.Sprite).material;
+      mat?.dispose();
+    }
+    // gather per-community positions
+    const byGroup = new Map<number, PoetNode[]>();
+    for (const v of visualsRef.current.values()) {
+      if (!byGroup.has(v.node.group)) byGroup.set(v.node.group, []);
+      byGroup.get(v.node.group)!.push(v.node);
+    }
+    for (const [gid, members] of byGroup) {
+      if (members.length < 4) continue;
+      let mx = 0, my = 0, mz = 0;
+      for (const n of members) {
+        mx += n.x ?? 0;
+        my += n.y ?? 0;
+        mz += n.z ?? 0;
+      }
+      mx /= members.length;
+      my /= members.length;
+      mz /= members.length;
+      let vSum = 0;
+      for (const n of members) {
+        vSum += (n.x! - mx) ** 2 + (n.y! - my) ** 2 + (n.z! - mz) ** 2;
+      }
+      const spread = Math.sqrt(vSum / members.length) || 60;
+      const color = new THREE.Color(groupColor.get(gid) ?? '#8ecae6');
+
+      // one broad cloud at the centre + two smaller wisps offset around it
+      const cloudSpecs = [
+        { scale: spread * 3.4 + 90, opacity: 0.11, off: 0 },
+        { scale: spread * 2.2 + 60, opacity: 0.08, off: spread * 0.75 },
+        { scale: spread * 1.8 + 50, opacity: 0.06, off: spread * 0.75 },
+      ];
+      for (const spec of cloudSpecs) {
+        const mat = new THREE.SpriteMaterial({
+          map: nebulaTexture,
+          color: color.clone().lerp(WHITE, 0.12),
+          transparent: true,
+          opacity: spec.opacity,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          rotation: Math.random() * Math.PI * 2,
+        });
+        const sprite = new THREE.Sprite(mat);
+        sprite.position.set(
+          mx + (Math.random() - 0.5) * 2 * spec.off,
+          my + (Math.random() - 0.5) * 2 * spec.off,
+          mz + (Math.random() - 0.5) * 2 * spec.off,
+        );
+        sprite.scale.set(spec.scale, spec.scale, 1);
+        sprite.renderOrder = -2;
+        group.add(sprite);
+      }
+    }
+  }, [groupColor, nebulaTexture]);
+
+  // Glide the camera to frame the whole constellation after the first layout,
+  // and (re)paint the nebula clouds every time the layout settles.
   const didIntroRef = useRef(false);
   const handleEngineStop = useCallback(() => {
+    rebuildNebulae();
     if (didIntroRef.current) return;
     didIntroRef.current = true;
     fitCameraToGraph(2000);
-  }, [fitCameraToGraph]);
+  }, [fitCameraToGraph, rebuildNebulae]);
 
   const nodeLabel = useCallback((n: PoetNode) => {
     const cy = n.courtesyName ? `字${n.courtesyName} · ` : '';
@@ -357,6 +541,7 @@ function StarMapInner({
       height={height}
       graphData={graphData}
       backgroundColor="#04050c"
+      controlType="orbit"
       showNavInfo={false}
       warmupTicks={70}
       cooldownTicks={180}

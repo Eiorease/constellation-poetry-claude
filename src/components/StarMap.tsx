@@ -409,6 +409,35 @@ function StarMapInner({
       disposables.push(mat);
     }
 
+    // Soft palette-tinted glow patches drifting far behind the galaxy.
+    const glowTints = ['#f0bf85', '#7db8e8', '#c6ecff', '#454f86', '#e79ac4', '#f0bf85'];
+    for (let i = 0; i < 7; i++) {
+      const r = 950 + Math.random() * 700;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      const mat = new THREE.SpriteMaterial({
+        map: nebulaTexture,
+        color: glowTints[i % glowTints.length],
+        transparent: true,
+        opacity: 0.035 + Math.random() * 0.03,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        rotation: Math.random() * Math.PI * 2,
+      });
+      const glow = new THREE.Sprite(mat);
+      const scale = 480 + Math.random() * 470;
+      glow.scale.set(scale, scale, 1);
+      glow.position.set(
+        r * Math.sin(phi) * Math.cos(theta),
+        r * Math.sin(phi) * Math.sin(theta) * 0.6,
+        r * Math.cos(phi),
+      );
+      glow.renderOrder = -3;
+      scene.add(glow);
+      sceneObjects.push(glow);
+      disposables.push(mat);
+    }
+
     // Container for per-community nebula clouds (rebuilt on engine stop).
     const nebulaGroup = new THREE.Group();
     nebulaGroup.renderOrder = -2;
@@ -934,6 +963,59 @@ function StarMapInner({
       stream.position.set(gx, gy, gz);
       stream.renderOrder = -1;
       group.add(stream);
+    }
+
+    // --- ambient particles: a soft halo hugging the nebula's rim plus dim
+    // same-palette motes filling the whole volume, so zoomed-in views float
+    // inside a sea of particles instead of empty black space
+    {
+      const haloCount = 2600;
+      const ambientCount = 5200;
+      const total = haloCount + ambientCount;
+      const aPos = new Float32Array(total * 3);
+      const aCol = new Float32Array(total * 3);
+      for (let i = 0; i < total; i++) {
+        if (i < haloCount) {
+          // shell around the disc rim (slightly flattened)
+          const rr = 320 + Math.abs(gauss3()) * 170;
+          const theta = Math.random() * Math.PI * 2;
+          const phi = Math.acos(2 * Math.random() - 1);
+          aPos[i * 3] = rr * Math.sin(phi) * Math.cos(theta);
+          aPos[i * 3 + 1] = rr * Math.sin(phi) * Math.sin(theta) * 0.55;
+          aPos[i * 3 + 2] = rr * Math.cos(phi);
+        } else {
+          // gaussian ball covering the interior volume too
+          aPos[i * 3] = gauss3() * 300;
+          aPos[i * 3 + 1] = gauss3() * 190;
+          aPos[i * 3 + 2] = gauss3() * 300;
+        }
+        const roll = Math.random();
+        if (roll < 0.5) tmp.copy(DUST_AMBER);
+        else if (roll < 0.85) tmp.copy(DUST_COOL);
+        else tmp.copy(DUST_BRIGHT);
+        tmp.multiplyScalar(0.22 + Math.random() * 0.5);
+        aCol[i * 3] = tmp.r;
+        aCol[i * 3 + 1] = tmp.g;
+        aCol[i * 3 + 2] = tmp.b;
+      }
+      const ambGeo = new THREE.BufferGeometry();
+      ambGeo.setAttribute('position', new THREE.BufferAttribute(aPos, 3));
+      ambGeo.setAttribute('color', new THREE.BufferAttribute(aCol, 3));
+      const ambMat = new THREE.PointsMaterial({
+        size: 1.3,
+        map: haloTexture,
+        vertexColors: true,
+        sizeAttenuation: false,
+        transparent: true,
+        opacity: 0.38,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      ambMat.userData.baseOpacity = 0.38;
+      const ambient = new THREE.Points(ambGeo, ambMat);
+      ambient.position.set(gx, gy, gz);
+      ambient.renderOrder = -1;
+      group.add(ambient);
     }
 
     // --- central bulge: a dense knot of warm stars filling the core --------

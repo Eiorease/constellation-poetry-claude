@@ -197,19 +197,25 @@ interface NodeVisual {
 }
 
 /**
- * Differential-rotation state. Each community rotates as a coherent block
- * around the nebula's vertical axis: inner communities faster, outer slower
- * (full revolution ≈ 12–25 min), with a small per-community speed jitter.
+ * Differential-rotation state, galaxy style: the disc is split into radial
+ * rings ("分层"); each ring rotates rigidly around the galactic core, inner
+ * rings faster (~13 min/rev) and outer rings slower (~24 min/rev), so the
+ * spiral arms shear very slowly like a real galaxy.
  */
 interface RotationState {
   center: THREE.Vector3;
-  groups: Map<number, { omega: number; theta: number; pivot: THREE.Group | null }>;
-  orbits: Map<string, { base: THREE.Vector3; gid: number }>;
+  rings: Map<number, { omega: number; theta: number; pivot: THREE.Group | null }>;
+  orbits: Map<string, { base: THREE.Vector3; ring: number }>;
   /** smoothed speed factor 0..1: drops to 0 instantly, ramps back gradually */
   speed: number;
   lastInteract: number;
   linksDirty: boolean;
 }
+
+const RING_COUNT = 6;
+
+/** center-weighted random in ~[-1.5, 1.5] */
+const gauss3 = () => Math.random() + Math.random() + Math.random() - 1.5;
 
 const ROTATION_IDLE_DELAY = 2000; // ms of stillness before resuming
 const ROTATION_RAMP_SECONDS = 2.5; // gradual spin-up time
@@ -241,7 +247,7 @@ function StarMapInner({
   const nebulaGroupRef = useRef<THREE.Group | null>(null);
   const rotationRef = useRef<RotationState>({
     center: new THREE.Vector3(),
-    groups: new Map(),
+    rings: new Map(),
     orbits: new Map(),
     speed: 0,
     lastInteract: 0,
@@ -265,7 +271,16 @@ function StarMapInner({
     return m;
   }, [groups]);
 
-  const graphData = useMemo(() => ({ nodes, links }), [nodes, links]);
+  const graphData = useMemo(() => {
+    // Pin every node at its spiral-arm position: the galaxy layout comes from
+    // the data, not the force simulation (rotation still moves x/z visually).
+    for (const n of nodes) {
+      n.fx = n.x;
+      n.fy = n.y;
+      n.fz = n.z;
+    }
+    return { nodes, links };
+  }, [nodes, links]);
 
   // --- one-time scene setup: bloom, starfield, fog, camera intro -----------
   useEffect(() => {
@@ -399,13 +414,10 @@ function StarMapInner({
   useEffect(() => {
     const fg = fgRef.current;
     if (!fg) return;
-    const linkForce = fg.d3Force('link') as
-      | { distance: (fn: (l: PoemLink) => number) => void }
-      | undefined;
-    linkForce?.distance((l: PoemLink) => 95 - l.weight * 7.5);
-    // invalidate rotation orbits while the engine re-runs; they are rebuilt
-    // from the settled positions in handleEngineStop
-    rotationRef.current.groups.clear();
+    // Nodes are pinned (fx/fy/fz) at their spiral-arm positions, so the
+    // simulation only needs a brief run to (re)build objects and settle.
+    // Invalidate rotation orbits meanwhile; handleEngineStop rebuilds them.
+    rotationRef.current.rings.clear();
     rotationRef.current.orbits.clear();
     fg.d3ReheatSimulation();
   }, [graphData]);
@@ -563,8 +575,9 @@ function StarMapInner({
     const fitDist =
       (radius / Math.tan(((camera.fov / 2) * Math.PI) / 180) / Math.min(1, camera.aspect || 1)) *
       1.18;
+    // tilted overhead view (~55° elevation), like a galaxy astrophoto
     fg.cameraPosition(
-      { x: cx, y: cy + fitDist * 0.08, z: cz + fitDist },
+      { x: cx, y: cy + fitDist * 0.82, z: cz + fitDist * 0.57 },
       { x: cx, y: cy, z: cz },
       duration,
     );
@@ -625,73 +638,101 @@ function StarMapInner({
 
     const rot = rotationRef.current;
     rot.center.set(gx, gy, gz);
-    rot.groups.clear();
+    rot.rings.clear();
     rot.orbits.clear();
 
     const tmp = new THREE.Color();
 
-    for (const [gid, members] of byGroup) {
-      if (members.length < 4) continue;
-      let mx = 0, my = 0, mz = 0;
+    // --- radial rings: rigid layers of the differential rotation ------------
+    let maxR = 1;
+    for (const members of byGroup.values()) {
       for (const n of members) {
-        mx += n.x ?? 0;
-        my += n.y ?? 0;
-        mz += n.z ?? 0;
+        maxR = Math.max(maxR, Math.hypot((n.x ?? 0) - gx, (n.z ?? 0) - gz));
       }
-      mx /= members.length;
-      my /= members.length;
-      mz /= members.length;
-      let vSum = 0;
-      for (const n of members) {
-        vSum += (n.x! - mx) ** 2 + (n.y! - my) ** 2 + (n.z! - mz) ** 2;
-      }
-      const spread = Math.sqrt(vSum / members.length) || 60;
-      const color = new THREE.Color(groupColor.get(gid) ?? '#b8c8ea');
-
-      // Differential rotation: ω by distance from the galactic centre
-      // (inner ≈ 12 min/rev, outer up to ≈ 25 min) + per-community jitter.
-      const rXZ = Math.hypot(mx - gx, mz - gz);
-      const jitter = 0.92 + ((gid * 37) % 10) * 0.016; // deterministic ±8%
-      const omega = ((Math.PI * 2) / 720) * (1 / (1 + rXZ / 900)) * jitter;
-      // pivot group sits at the centre; children use centre-relative coords
+    }
+    const ringWidth = maxR / RING_COUNT;
+    const ringOf = (x: number, z: number) =>
+      Math.min(RING_COUNT - 1, Math.floor(Math.hypot(x - gx, z - gz) / ringWidth));
+    for (let i = 0; i < RING_COUNT; i++) {
+      const rMid = (i + 0.5) * ringWidth;
+      // inner ring ≈ 13 min/rev, outer ring ≈ 24 min/rev
+      const omega = ((Math.PI * 2) / 740) * (1 / (1 + rMid / 620));
       const pivot = new THREE.Group();
       pivot.position.set(gx, gy, gz);
       group.add(pivot);
-      rot.groups.set(gid, { omega, theta: 0, pivot });
+      rot.rings.set(i, { omega, theta: 0, pivot });
+    }
 
-      // register member orbits (rotated in lockstep with the pivot)
+    // per-ring dust accumulators
+    const dustPos: number[][] = Array.from({ length: RING_COUNT }, () => []);
+    const dustCol: number[][] = Array.from({ length: RING_COUNT }, () => []);
+
+    for (const [gid, members] of byGroup) {
+      const color = new THREE.Color(groupColor.get(gid) ?? '#b8c8ea');
+
+      // register member orbits on their radial ring
       for (const n of members) {
         rot.orbits.set(n.id, {
           base: new THREE.Vector3((n.x ?? 0) - gx, (n.y ?? 0) - gy, (n.z ?? 0) - gz),
-          gid,
+          ring: ringOf(n.x ?? 0, n.z ?? 0),
         });
       }
 
-      // --- star dust: hundreds of tiny grains scattered around the members,
-      // so the "gas" is actually made of stars, like a real galaxy arm.
-      const dustCount = Math.min(1800, members.length * 16);
-      const dPos = new Float32Array(dustCount * 3);
-      const dCol = new Float32Array(dustCount * 3);
-      const sigma = spread * 0.5;
-      for (let i = 0; i < dustCount; i++) {
-        const seed = members[Math.floor(Math.random() * members.length)];
-        const g1 = () => (Math.random() + Math.random() + Math.random() - 1.5) * sigma;
-        dPos[i * 3] = (seed.x ?? 0) + g1() - gx;
-        dPos[i * 3 + 1] = (seed.y ?? 0) + g1() - gy;
-        dPos[i * 3 + 2] = (seed.z ?? 0) + g1() - gz;
-        const roll = Math.random();
-        if (roll < 0.45) tmp.copy(DUST_AMBER).lerp(color, 0.3);
-        else if (roll < 0.8) tmp.copy(DUST_COOL).lerp(color, 0.45);
-        else if (roll < 0.88) tmp.copy(DUST_PINK);
-        else tmp.copy(DUST_BRIGHT);
-        tmp.multiplyScalar(0.35 + Math.random() * 0.65);
-        dCol[i * 3] = tmp.r;
-        dCol[i * 3 + 1] = tmp.g;
-        dCol[i * 3 + 2] = tmp.b;
+      // --- star dust: grains scattered along the arm around its members,
+      // flattened into the disc, bucketed into the ring they fall in.
+      const grainsPerMember = 16;
+      const sigma = 26;
+      for (const seed of members) {
+        for (let i = 0; i < grainsPerMember; i++) {
+          const g1 = () => (Math.random() + Math.random() + Math.random() - 1.5) * sigma;
+          const px = (seed.x ?? 0) + g1();
+          const py = (seed.y ?? 0) + g1() * 0.3; // keep the disc thin
+          const pz = (seed.z ?? 0) + g1();
+          const roll = Math.random();
+          if (roll < 0.45) tmp.copy(DUST_AMBER).lerp(color, 0.3);
+          else if (roll < 0.8) tmp.copy(DUST_COOL).lerp(color, 0.45);
+          else if (roll < 0.88) tmp.copy(DUST_PINK);
+          else tmp.copy(DUST_BRIGHT);
+          tmp.multiplyScalar(0.35 + Math.random() * 0.65);
+          const ring = ringOf(px, pz);
+          dustPos[ring].push(px - gx, py - gy, pz - gz);
+          dustCol[ring].push(tmp.r, tmp.g, tmp.b);
+        }
       }
+
+      // --- gauze wisps sampled along the arm, attached to their ring pivot
+      const wispColor = color.clone().lerp(new THREE.Color('#aebfe8'), 0.55);
+      const samples = Math.min(4, members.length);
+      for (let i = 0; i < samples; i++) {
+        const seed = members[Math.floor(((i + 0.5) / samples) * members.length)];
+        const mat = new THREE.SpriteMaterial({
+          map: nebulaTexture,
+          color: wispColor,
+          transparent: true,
+          opacity: 0.05 + Math.random() * 0.03,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          rotation: Math.random() * Math.PI * 2,
+        });
+        const sprite = new THREE.Sprite(mat);
+        const scale = 110 + Math.random() * 70;
+        sprite.position.set(
+          (seed.x ?? 0) - gx + gauss3() * 20,
+          (seed.y ?? 0) - gy,
+          (seed.z ?? 0) - gz + gauss3() * 20,
+        );
+        sprite.scale.set(scale, scale, 1);
+        sprite.renderOrder = -2;
+        rot.rings.get(ringOf(seed.x ?? 0, seed.z ?? 0))!.pivot!.add(sprite);
+      }
+    }
+
+    // upload per-ring dust point clouds
+    for (let i = 0; i < RING_COUNT; i++) {
+      if (dustPos[i].length === 0) continue;
       const dustGeo = new THREE.BufferGeometry();
-      dustGeo.setAttribute('position', new THREE.BufferAttribute(dPos, 3));
-      dustGeo.setAttribute('color', new THREE.BufferAttribute(dCol, 3));
+      dustGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(dustPos[i]), 3));
+      dustGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(dustCol[i]), 3));
       const dustMat = new THREE.PointsMaterial({
         size: 3.4,
         map: haloTexture,
@@ -704,41 +745,49 @@ function StarMapInner({
       });
       const dust = new THREE.Points(dustGeo, dustMat);
       dust.renderOrder = -1;
-      pivot.add(dust);
+      rot.rings.get(i)!.pivot!.add(dust);
+    }
 
-      // --- gauze wisps: silvery-blue, faint (centre-relative coords)
-      const wispColor = color.clone().lerp(new THREE.Color('#aebfe8'), 0.55);
-      const cloudSpecs = [
-        { scale: spread * 3.2 + 90, opacity: 0.08, off: 0 },
-        { scale: spread * 2.1 + 60, opacity: 0.055, off: spread * 0.75 },
-        { scale: spread * 1.7 + 50, opacity: 0.045, off: spread * 0.75 },
-      ];
-      for (const spec of cloudSpecs) {
-        const mat = new THREE.SpriteMaterial({
-          map: nebulaTexture,
-          color: wispColor,
-          transparent: true,
-          opacity: spec.opacity,
-          depthWrite: false,
-          blending: THREE.AdditiveBlending,
-          rotation: Math.random() * Math.PI * 2,
-        });
-        const sprite = new THREE.Sprite(mat);
-        sprite.position.set(
-          mx - gx + (Math.random() - 0.5) * 2 * spec.off,
-          my - gy + (Math.random() - 0.5) * 2 * spec.off,
-          mz - gz + (Math.random() - 0.5) * 2 * spec.off,
-        );
-        sprite.scale.set(spec.scale, spec.scale, 1);
-        sprite.renderOrder = -2;
-        pivot.add(sprite);
+    // --- central bulge: a dense knot of warm stars filling the core --------
+    {
+      const bulgeCount = 500;
+      const bPos = new Float32Array(bulgeCount * 3);
+      const bCol = new Float32Array(bulgeCount * 3);
+      for (let i = 0; i < bulgeCount; i++) {
+        const rr = Math.abs(gauss3()) * 55;
+        const ang = Math.random() * Math.PI * 2;
+        bPos[i * 3] = rr * Math.cos(ang);
+        bPos[i * 3 + 1] = gauss3() * (16 - rr * 0.12);
+        bPos[i * 3 + 2] = rr * Math.sin(ang);
+        tmp.copy(Math.random() < 0.75 ? DUST_BRIGHT : DUST_AMBER);
+        tmp.multiplyScalar(0.5 + Math.random() * 0.5);
+        bCol[i * 3] = tmp.r;
+        bCol[i * 3 + 1] = tmp.g;
+        bCol[i * 3 + 2] = tmp.b;
       }
+      const bulgeGeo = new THREE.BufferGeometry();
+      bulgeGeo.setAttribute('position', new THREE.BufferAttribute(bPos, 3));
+      bulgeGeo.setAttribute('color', new THREE.BufferAttribute(bCol, 3));
+      const bulgeMat = new THREE.PointsMaterial({
+        size: 3.2,
+        map: haloTexture,
+        vertexColors: true,
+        sizeAttenuation: true,
+        transparent: true,
+        opacity: 0.8,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const bulge = new THREE.Points(bulgeGeo, bulgeMat);
+      bulge.renderOrder = -1;
+      rot.rings.get(0)!.pivot!.add(bulge);
     }
 
     // --- warm galactic-core glow (stationary, rotationally symmetric)
     const coreSpecs = [
-      { color: '#fff3dc', scale: 620, opacity: 0.14 },
-      { color: '#ffffff', scale: 330, opacity: 0.1 },
+      { color: '#fff3dc', scale: 620, opacity: 0.16 },
+      { color: '#fff8e8', scale: 340, opacity: 0.16 },
+      { color: '#ffffff', scale: 170, opacity: 0.14 },
     ];
     for (const spec of coreSpecs) {
       const mat = new THREE.SpriteMaterial({
@@ -792,7 +841,7 @@ function StarMapInner({
     // advance every community by its own angular velocity
     const step = (dt: number, now: number) => {
       const rot = rotationRef.current;
-      if (rot.groups.size === 0) return;
+      if (rot.rings.size === 0) return;
       const paused =
         selectionActiveRef.current || now - rot.lastInteract < ROTATION_IDLE_DELAY;
       if (paused) {
@@ -804,7 +853,7 @@ function StarMapInner({
       const eased = rot.speed * rot.speed; // ease-in ramp
       if (eased <= 0.0001) return;
 
-      for (const g of rot.groups.values()) {
+      for (const g of rot.rings.values()) {
         g.theta += g.omega * eased * dt;
         if (g.pivot) g.pivot.rotation.y = g.theta;
       }
@@ -812,7 +861,7 @@ function StarMapInner({
       for (const v of visualsRef.current.values()) {
         const orbit = rot.orbits.get(v.node.id);
         if (!orbit) continue;
-        const g = rot.groups.get(orbit.gid);
+        const g = rot.rings.get(orbit.ring);
         if (!g) continue;
         const cosT = Math.cos(g.theta);
         const sinT = Math.sin(g.theta);

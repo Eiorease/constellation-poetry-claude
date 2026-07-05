@@ -47,17 +47,12 @@ const GROUPS = [
   { id: 9, name: '南宋', color: '#c5dcea' },
 ];
 
-// Cluster centres roughly on a sphere so communities read as nebulae.
-const CLUSTER_RADIUS = 260;
-const clusterCenters = GROUPS.map((g, i) => {
-  const phi = Math.acos(1 - (2 * (i + 0.5)) / GROUPS.length);
-  const theta = Math.PI * (1 + Math.sqrt(5)) * i;
-  return {
-    x: CLUSTER_RADIUS * Math.sin(phi) * Math.cos(theta),
-    y: CLUSTER_RADIUS * Math.sin(phi) * Math.sin(theta) * 0.7,
-    z: CLUSTER_RADIUS * Math.cos(phi),
-  };
-});
+// Spiral-galaxy layout: each community (in dynasty/chronological order) is a
+// spiral arm winding out of the galactic core in the XZ plane, with a thin
+// disc profile in Y (thicker toward the central bulge).
+const ARM_R_CORE = 80; // where arms emerge from the bulge
+const ARM_R_MAX = 520; // outer edge of the disc
+const ARM_WIND = 2.0; // radians an arm winds from core to edge
 
 // ---------------------------------------------------------------------------
 // Curated real poets  [name, courtesyName, dynasty, poemCount, group, isHub]
@@ -466,8 +461,6 @@ const idByName = new Map();
 
 function addNode(name, courtesyName, dynasty, poemCount, group, isHub, generated) {
   const id = `p${nodes.length}`;
-  const c = clusterCenters[group];
-  const spread = isHub ? 26 : 62;
   nodes.push({
     id,
     name,
@@ -476,9 +469,11 @@ function addNode(name, courtesyName, dynasty, poemCount, group, isHub, generated
     poemCount,
     group,
     generated,
-    x: c.x + gauss() * spread,
-    y: c.y + gauss() * spread,
-    z: c.z + gauss() * spread,
+    isHub,
+    // positions assigned by the spiral-arm pass below
+    x: 0,
+    y: 0,
+    z: 0,
   });
   usedNames.add(name);
   idByName.set(name, id);
@@ -499,6 +494,28 @@ while (nodes.length < TOTAL_NODES) {
   const group = randInt(0, GROUPS.length - 1);
   addNode(name, courtesyName, DYNASTY_BY_GROUP[group], randInt(10, 420), group, false, true);
 }
+
+// --- spiral-arm position pass ----------------------------------------------
+// Hubs (famous poets) sit toward the inner arm; everyone else spreads outward.
+for (const g of GROUPS) {
+  const members = nodes.filter((n) => n.group === g.id);
+  members.sort(
+    (a, b) => (b.isHub ? 1 : 0) - (a.isHub ? 1 : 0) || b.poemCount - a.poemCount,
+  );
+  const phi = (g.id / GROUPS.length) * Math.PI * 2;
+  members.forEach((n, i) => {
+    // normalized position along the arm, with jitter
+    const s = Math.max(0.02, Math.min(1, (i + 0.5) / members.length + (rand() - 0.5) * 0.12));
+    const r = ARM_R_CORE + s * (ARM_R_MAX - ARM_R_CORE) + gauss() * 14;
+    const theta = phi + s * ARM_WIND;
+    // in-plane scatter widens toward the arm tip; disc thickens near the bulge
+    const scatter = 15 + 24 * s;
+    n.x = r * Math.cos(theta) + gauss() * scatter;
+    n.z = r * Math.sin(theta) + gauss() * scatter;
+    n.y = gauss() * (26 * Math.exp(-r / 180) + 7);
+  });
+}
+for (const n of nodes) delete n.isHub;
 
 const membersByGroup = GROUPS.map((g) =>
   nodes.filter((n) => n.group === g.id)

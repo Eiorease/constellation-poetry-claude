@@ -35,7 +35,7 @@ export function Legend() {
           </li>
           <li className="flex items-center gap-2.5 text-xs text-ink-400">
             <span aria-hidden className="inline-block h-px w-6 bg-ink-400" />
-            连线越短越亮,情谊越深
+            诗派悬臂按朝代绕河心展开
           </li>
         </ul>
       )}

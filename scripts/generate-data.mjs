@@ -50,9 +50,9 @@ const GROUPS = [
 // Spiral-galaxy layout: each community (in dynasty/chronological order) is a
 // spiral arm winding out of the galactic core in the XZ plane, with a thin
 // disc profile in Y (thicker toward the central bulge).
-const ARM_R_CORE = 80; // where arms emerge from the bulge
-const ARM_R_MAX = 520; // outer edge of the disc
-const ARM_WIND = 2.0; // radians an arm winds from core to edge
+const ARM_R_CORE = 50; // where arms emerge from the bulge
+const ARM_R_MAX = 310; // outer edge of the disc (compact, dense galaxy)
+const ARM_WIND = 2.6; // radians an arm winds from core to edge
 
 // ---------------------------------------------------------------------------
 // Curated real poets  [name, courtesyName, dynasty, poemCount, group, isHub]
@@ -506,13 +506,14 @@ for (const g of GROUPS) {
   members.forEach((n, i) => {
     // normalized position along the arm, with jitter
     const s = Math.max(0.02, Math.min(1, (i + 0.5) / members.length + (rand() - 0.5) * 0.12));
-    const r = ARM_R_CORE + s * (ARM_R_MAX - ARM_R_CORE) + gauss() * 14;
+    const r = ARM_R_CORE + s * (ARM_R_MAX - ARM_R_CORE) + gauss() * 10;
     const theta = phi + s * ARM_WIND;
-    // in-plane scatter widens toward the arm tip; disc thickens near the bulge
-    const scatter = 15 + 24 * s;
+    // wide arm bands so neighbouring arms almost touch (no hollow gaps);
+    // disc thickens near the bulge
+    const scatter = 17 + 27 * s;
     n.x = r * Math.cos(theta) + gauss() * scatter;
     n.z = r * Math.sin(theta) + gauss() * scatter;
-    n.y = gauss() * (26 * Math.exp(-r / 180) + 7);
+    n.y = gauss() * (22 * Math.exp(-r / 120) + 6);
   });
 }
 for (const n of nodes) delete n.isHub;

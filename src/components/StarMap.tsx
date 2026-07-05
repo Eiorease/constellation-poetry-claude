@@ -68,19 +68,42 @@ function makeHaloTexture(): THREE.Texture {
   return tex;
 }
 
-/** Deep-space backdrop: a subtle radial gradient rendered as scene.background. */
+/**
+ * Deep-space dark-field backdrop: near-black, with a few very faint realistic
+ * nebula patches painted in (~80% dimmer than the foreground), so the poets'
+ * aggregated star points form the main nebula body themselves.
+ */
 function makeSpaceBackgroundTexture(): THREE.Texture {
   const size = 512;
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext('2d')!;
-  const g = ctx.createRadialGradient(size * 0.5, size * 0.42, 0, size * 0.5, size * 0.42, size * 0.75);
-  g.addColorStop(0, '#0b1026');
-  g.addColorStop(0.4, '#060a1a');
-  g.addColorStop(0.75, '#030510');
-  g.addColorStop(1, '#010208');
+  const g = ctx.createRadialGradient(size * 0.5, size * 0.42, 0, size * 0.5, size * 0.42, size * 0.8);
+  g.addColorStop(0, '#04050c');
+  g.addColorStop(0.5, '#020308');
+  g.addColorStop(1, '#000103');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, size, size);
+
+  // faint realistic nebula patches: layered soft blobs, heavily dimmed
+  const patches = [
+    { hue: '58,63,102', x: 0.22, y: 0.3, r: 0.34, a: 0.07 }, // violet-blue
+    { hue: '44,74,82', x: 0.78, y: 0.62, r: 0.3, a: 0.055 }, // teal
+    { hue: '74,59,40', x: 0.6, y: 0.16, r: 0.24, a: 0.05 }, // amber
+    { hue: '70,48,72', x: 0.16, y: 0.78, r: 0.26, a: 0.045 }, // dim magenta
+  ];
+  for (const p of patches) {
+    for (let i = 0; i < 7; i++) {
+      const bx = (p.x + (Math.random() - 0.5) * p.r * 0.9) * size;
+      const by = (p.y + (Math.random() - 0.5) * p.r * 0.9) * size;
+      const br = p.r * size * (0.25 + Math.random() * 0.45);
+      const bg = ctx.createRadialGradient(bx, by, 0, bx, by, br);
+      bg.addColorStop(0, `rgba(${p.hue},${p.a * (0.5 + Math.random() * 0.5)})`);
+      bg.addColorStop(1, `rgba(${p.hue},0)`);
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, size, size);
+    }
+  }
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
@@ -437,12 +460,12 @@ function StarMapInner({
         map: haloTexture,
         color: color.clone(),
         transparent: true,
-        opacity: 0.35,
+        opacity: 0.07,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
       });
       const halo = new THREE.Sprite(haloMat);
-      halo.scale.set(r * 8.5, r * 8.5, 1);
+      halo.scale.set(r * 6, r * 6, 1);
       g.add(halo);
 
       const label = new SpriteText(node.name, 3.6, '#dde0ee');
@@ -488,27 +511,27 @@ function StarMapInner({
         v.sphereMat.color.copy(v.baseColor);
         v.sphereMat.opacity = 1;
         v.haloMat.color.copy(v.baseColor);
-        v.haloMat.opacity = 0.35;
+        v.haloMat.opacity = 0.07;
         v.label.visible = !v.node.generated;
         v.label.color = '#dde0ee';
       } else if (isSelected) {
         v.sphereMat.color.copy(v.baseColor).lerp(WHITE, 0.55);
         v.sphereMat.opacity = 1;
         v.haloMat.color.copy(v.baseColor).lerp(WHITE, 0.3);
-        v.haloMat.opacity = 0.8;
+        v.haloMat.opacity = 0.4;
         v.label.visible = true;
         v.label.color = '#ffffff';
       } else if (isLit) {
         v.sphereMat.color.copy(v.baseColor).lerp(WHITE, 0.15);
         v.sphereMat.opacity = 1;
         v.haloMat.color.copy(v.baseColor);
-        v.haloMat.opacity = 0.5;
+        v.haloMat.opacity = 0.18;
         v.label.visible = true;
         v.label.color = '#dde0ee';
       } else {
         v.sphereMat.color.copy(v.baseColor).multiplyScalar(0.22);
         v.sphereMat.opacity = 0.35;
-        v.haloMat.opacity = 0.04;
+        v.haloMat.opacity = 0.01;
         v.label.visible = false;
       }
     }
@@ -590,7 +613,7 @@ function StarMapInner({
         if (!fg) return;
         const { x = 0, y = 0, z = 0 } = node;
         const dist = Math.hypot(x, y, z) || 1;
-        const ratio = 1 + 170 / dist;
+        const ratio = 1 + 120 / dist;
         fg.cameraPosition({ x: x * ratio, y: y * ratio, z: z * ratio }, { x, y, z }, 1100);
       },
       resetCamera: () => fitCameraToGraph(1100),
@@ -655,8 +678,8 @@ function StarMapInner({
       Math.min(RING_COUNT - 1, Math.floor(Math.hypot(x - gx, z - gz) / ringWidth));
     for (let i = 0; i < RING_COUNT; i++) {
       const rMid = (i + 0.5) * ringWidth;
-      // inner ring ≈ 13 min/rev, outer ring ≈ 24 min/rev
-      const omega = ((Math.PI * 2) / 740) * (1 / (1 + rMid / 620));
+      // 50% faster: inner ring ≈ 9 min/rev, outer ring ≈ 15 min/rev
+      const omega = ((Math.PI * 2) / 493) * (1 / (1 + rMid / 620));
       const pivot = new THREE.Group();
       pivot.position.set(gx, gy, gz);
       group.add(pivot);
@@ -709,13 +732,14 @@ function StarMapInner({
           map: nebulaTexture,
           color: wispColor,
           transparent: true,
-          opacity: 0.05 + Math.random() * 0.03,
+          // dimmed ~80%: the aggregated star points carry the nebula body
+          opacity: 0.01 + Math.random() * 0.006,
           depthWrite: false,
           blending: THREE.AdditiveBlending,
           rotation: Math.random() * Math.PI * 2,
         });
         const sprite = new THREE.Sprite(mat);
-        const scale = 110 + Math.random() * 70;
+        const scale = 80 + Math.random() * 50;
         sprite.position.set(
           (seed.x ?? 0) - gx + gauss3() * 20,
           (seed.y ?? 0) - gy,
@@ -754,10 +778,10 @@ function StarMapInner({
       const bPos = new Float32Array(bulgeCount * 3);
       const bCol = new Float32Array(bulgeCount * 3);
       for (let i = 0; i < bulgeCount; i++) {
-        const rr = Math.abs(gauss3()) * 55;
+        const rr = Math.abs(gauss3()) * 38;
         const ang = Math.random() * Math.PI * 2;
         bPos[i * 3] = rr * Math.cos(ang);
-        bPos[i * 3 + 1] = gauss3() * (16 - rr * 0.12);
+        bPos[i * 3 + 1] = gauss3() * (13 - rr * 0.12);
         bPos[i * 3 + 2] = rr * Math.sin(ang);
         tmp.copy(Math.random() < 0.75 ? DUST_BRIGHT : DUST_AMBER);
         tmp.multiplyScalar(0.5 + Math.random() * 0.5);
@@ -783,11 +807,11 @@ function StarMapInner({
       rot.rings.get(0)!.pivot!.add(bulge);
     }
 
-    // --- warm galactic-core glow (stationary, rotationally symmetric)
+    // --- warm galactic-core glow, dimmed ~80%: the bulge stars do the work
     const coreSpecs = [
-      { color: '#fff3dc', scale: 620, opacity: 0.16 },
-      { color: '#fff8e8', scale: 340, opacity: 0.16 },
-      { color: '#ffffff', scale: 170, opacity: 0.14 },
+      { color: '#fff3dc', scale: 380, opacity: 0.04 },
+      { color: '#fff8e8', scale: 210, opacity: 0.04 },
+      { color: '#ffffff', scale: 110, opacity: 0.035 },
     ];
     for (const spec of coreSpecs) {
       const mat = new THREE.SpriteMaterial({

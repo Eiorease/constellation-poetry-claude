@@ -4,9 +4,11 @@ import type { PoetNode } from '../types';
 interface Props {
   nodes: PoetNode[];
   onSelect: (node: PoetNode) => void;
+  /** called on any typing/focus, e.g. to pause the nebula rotation */
+  onActivity?: () => void;
 }
 
-export function SearchBar({ nodes, onSelect }: Props) {
+export function SearchBar({ nodes, onSelect, onActivity }: Props) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -50,8 +52,12 @@ export function SearchBar({ nodes, onSelect }: Props) {
         onChange={(e) => {
           setQuery(e.target.value);
           setOpen(true);
+          onActivity?.();
         }}
-        onFocus={() => setOpen(true)}
+        onFocus={() => {
+          setOpen(true);
+          onActivity?.();
+        }}
         onKeyDown={(e) => {
           if (e.key === 'ArrowDown') {
             e.preventDefault();

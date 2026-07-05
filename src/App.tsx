@@ -186,7 +186,11 @@ export default function App() {
           </p>
         </div>
         <div className="pointer-events-auto">
-          <SearchBar nodes={filtered.nodes} onSelect={handleSearchSelect} />
+          <SearchBar
+            nodes={filtered.nodes}
+            onSelect={handleSearchSelect}
+            onActivity={() => apiRef.current?.notifyInteraction()}
+          />
         </div>
       </header>
 

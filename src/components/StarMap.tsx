@@ -47,7 +47,7 @@ const WHITE = new THREE.Color('#ffffff');
 const DEFAULT_CAMERA_DISTANCE = 620;
 
 function nodeRadius(n: PoetNode): number {
-  return Math.min(1.7 + Math.cbrt(n.poemCount) * 0.34, 6.4);
+  return Math.min(1.1 + Math.cbrt(n.poemCount) * 0.2, 3.2);
 }
 
 /** Soft radial glow texture shared by every halo sprite. */
@@ -285,6 +285,7 @@ function StarMapInner({
     () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
     [],
   );
+  const bloomRef = useRef<UnrealBloomPass | null>(null);
   const haloTexture = useMemo(makeHaloTexture, []);
   const nebulaTexture = useMemo(makeNebulaTexture, []);
   const spikeTexture = useMemo(makeSpikeStarTexture, []);
@@ -321,9 +322,11 @@ function StarMapInner({
     if (!fg) return;
     if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__fg = fg;
 
-    // Soft, luminous astrophoto glow.
-    const bloom = new UnrealBloomPass(new THREE.Vector2(1024, 1024), 0.9, 0.65, 0.15);
+    // Soft, luminous astrophoto glow; strength is adapted to camera distance
+    // every frame (see effect below) so close-ups don't blow out white.
+    const bloom = new UnrealBloomPass(new THREE.Vector2(1024, 1024), 0.85, 0.55, 0.22);
     fg.postProcessingComposer().addPass(bloom);
+    bloomRef.current = bloom;
 
     const scene = fg.scene();
     const backdrop = makeSpaceBackgroundTexture();
@@ -434,6 +437,7 @@ function StarMapInner({
       document.removeEventListener('visibilitychange', onVisible);
       controls.removeEventListener('start', onControlsActivity);
       controls.removeEventListener('change', onControlsActivity);
+      bloomRef.current = null;
       fg.postProcessingComposer().removePass(bloom);
       scene.background = null;
       nebulaGroupRef.current = null;
@@ -459,8 +463,10 @@ function StarMapInner({
   const nodeThreeObject = useCallback(
     (node: PoetNode) => {
       const color = new THREE.Color(groupColor.get(node.group) ?? '#8ecae6');
-      // famous poets shine as bright platinum-gold stars among the dust
+      // famous poets shine as bright platinum-gold stars among the dust;
+      // overall brightness capped so close-ups stay crisp, not blown out
       if (!node.generated) color.lerp(new THREE.Color('#fff2d8'), 0.45);
+      color.multiplyScalar(0.85);
       const r = nodeRadius(node);
       const g = new THREE.Group();
 
@@ -472,12 +478,12 @@ function StarMapInner({
         map: haloTexture,
         color: color.clone(),
         transparent: true,
-        opacity: 0.07,
+        opacity: 0.05,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
       });
       const halo = new THREE.Sprite(haloMat);
-      halo.scale.set(r * 6, r * 6, 1);
+      halo.scale.set(r * 4.5, r * 4.5, 1);
       g.add(halo);
 
       const label = new SpriteText(node.name, 3.6, '#dde0ee');
@@ -523,21 +529,21 @@ function StarMapInner({
         v.sphereMat.color.copy(v.baseColor);
         v.sphereMat.opacity = 1;
         v.haloMat.color.copy(v.baseColor);
-        v.haloMat.opacity = 0.07;
+        v.haloMat.opacity = 0.05;
         v.label.visible = !v.node.generated;
         v.label.color = '#dde0ee';
       } else if (isSelected) {
         v.sphereMat.color.copy(v.baseColor).lerp(WHITE, 0.55);
         v.sphereMat.opacity = 1;
         v.haloMat.color.copy(v.baseColor).lerp(WHITE, 0.3);
-        v.haloMat.opacity = 0.4;
+        v.haloMat.opacity = 0.3;
         v.label.visible = true;
         v.label.color = '#ffffff';
       } else if (isLit) {
         v.sphereMat.color.copy(v.baseColor).lerp(WHITE, 0.15);
         v.sphereMat.opacity = 1;
         v.haloMat.color.copy(v.baseColor);
-        v.haloMat.opacity = 0.18;
+        v.haloMat.opacity = 0.12;
         v.label.visible = true;
         v.label.color = '#dde0ee';
       } else {
@@ -700,10 +706,12 @@ function StarMapInner({
 
     // per-ring, per-layer dust accumulators: three depth layers so the sea of
     // particles reads crisp and dense up close, finer and sparser far out
+    // sizes are in screen pixels (sizeAttenuation off): grains stay crisp
+    // points at any zoom instead of ballooning into blobs up close
     const DUST_LAYERS = [
-      { grains: 16, sigma: 20, size: 2.8, opacity: 0.8, bright: 1 },
-      { grains: 30, sigma: 52, size: 1.6, opacity: 0.55, bright: 0.7 },
-      { grains: 44, sigma: 105, size: 1.0, opacity: 0.38, bright: 0.5 },
+      { grains: 16, sigma: 20, size: 2.8, opacity: 0.65, bright: 1 },
+      { grains: 30, sigma: 52, size: 1.9, opacity: 0.5, bright: 0.7 },
+      { grains: 44, sigma: 105, size: 1.2, opacity: 0.35, bright: 0.5 },
     ];
     const dustPos: number[][][] = DUST_LAYERS.map(() =>
       Array.from({ length: RING_COUNT }, () => []),
@@ -810,7 +818,7 @@ function StarMapInner({
           size: layer.size,
           map: haloTexture,
           vertexColors: true,
-          sizeAttenuation: true,
+          sizeAttenuation: false,
           transparent: true,
           opacity: layer.opacity,
           depthWrite: false,
@@ -851,10 +859,10 @@ function StarMapInner({
       streamGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3));
       streamGeo.setAttribute('color', new THREE.BufferAttribute(sCol, 3));
       const streamMat = new THREE.PointsMaterial({
-        size: 1.7,
+        size: 1.8,
         map: haloTexture,
         vertexColors: true,
-        sizeAttenuation: true,
+        sizeAttenuation: false,
         transparent: true,
         opacity: 0.55,
         depthWrite: false,
@@ -887,10 +895,10 @@ function StarMapInner({
       bulgeGeo.setAttribute('position', new THREE.BufferAttribute(bPos, 3));
       bulgeGeo.setAttribute('color', new THREE.BufferAttribute(bCol, 3));
       const bulgeMat = new THREE.PointsMaterial({
-        size: 3.2,
+        size: 2.6,
         map: haloTexture,
         vertexColors: true,
-        sizeAttenuation: true,
+        sizeAttenuation: false,
         transparent: true,
         opacity: 0.8,
         depthWrite: false,
@@ -950,6 +958,22 @@ function StarMapInner({
       posAttr.needsUpdate = true;
       geom.computeBoundingSphere();
     });
+  }, []);
+
+  // --- distance-adaptive bloom: prevents white-out when zoomed in -----------
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const fg = fgRef.current;
+      const bloom = bloomRef.current;
+      if (!fg || !bloom) return;
+      const d = fg.camera().position.distanceTo(rotationRef.current.center);
+      const t = Math.min(1, Math.max(0, (d - 140) / 760)); // 140 → 900
+      bloom.strength = 0.1 + t * 0.5;
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
   }, []);
 
   // --- differential rotation driver -----------------------------------------

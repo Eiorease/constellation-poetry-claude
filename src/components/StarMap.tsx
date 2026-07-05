@@ -79,9 +79,9 @@ function makeSpaceBackgroundTexture(): THREE.Texture {
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext('2d')!;
   const g = ctx.createRadialGradient(size * 0.5, size * 0.42, 0, size * 0.5, size * 0.42, size * 0.8);
-  g.addColorStop(0, '#04050c');
-  g.addColorStop(0.5, '#020308');
-  g.addColorStop(1, '#000103');
+  g.addColorStop(0, '#070c1e');
+  g.addColorStop(0.5, '#03060f');
+  g.addColorStop(1, '#010207');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, size, size);
 
@@ -177,12 +177,16 @@ function makeSpikeStarTexture(): THREE.Texture {
 }
 
 const STAR_TINTS = ['#dfe6ff', '#aebfff', '#fff2d0', '#ffd9a0', '#9aa3c7'];
-// star-dust tints: warm amber sea of stars with cool group-tinted regions,
-// plus sparse pink HII and bright white grains (astrophoto palette)
-const DUST_AMBER = new THREE.Color('#f0bf85');
-const DUST_COOL = new THREE.Color('#cdd8f4');
+// star-dust tints: golden-orange particle sea as the main body, with cool
+// group-tinted regions, sparse pink accents and bright platinum grains
+const DUST_AMBER = new THREE.Color('#f5b45e');
+const DUST_COOL = new THREE.Color('#c8d6f2');
 const DUST_PINK = new THREE.Color('#e79ac4');
 const DUST_BRIGHT = new THREE.Color('#fff3dd');
+// energy-tide stream tints (ice blue → teal → lake blue toward the core)
+const TIDE_ICE = new THREE.Color('#c6ecff');
+const TIDE_TEAL = new THREE.Color('#6fd3c7');
+const TIDE_LAKE = new THREE.Color('#7db8e8');
 
 /** Random star positions on a shell, with per-vertex warm/cool tints. */
 function makeStarField(
@@ -283,6 +287,7 @@ function StarMapInner({
   );
   const haloTexture = useMemo(makeHaloTexture, []);
   const nebulaTexture = useMemo(makeNebulaTexture, []);
+  const spikeTexture = useMemo(makeSpikeStarTexture, []);
 
   const notifyInteraction = useCallback(() => {
     rotationRef.current.lastInteract = performance.now();
@@ -291,6 +296,11 @@ function StarMapInner({
   const groupColor = useMemo(() => {
     const m = new Map<number, string>();
     groups.forEach((g) => m.set(g.id, g.color));
+    return m;
+  }, [groups]);
+  const groupName = useMemo(() => {
+    const m = new Map<number, string>();
+    groups.forEach((g) => m.set(g.id, g.name));
     return m;
   }, [groups]);
 
@@ -449,6 +459,8 @@ function StarMapInner({
   const nodeThreeObject = useCallback(
     (node: PoetNode) => {
       const color = new THREE.Color(groupColor.get(node.group) ?? '#8ecae6');
+      // famous poets shine as bright platinum-gold stars among the dust
+      if (!node.generated) color.lerp(new THREE.Color('#fff2d8'), 0.45);
       const r = nodeRadius(node);
       const g = new THREE.Group();
 
@@ -598,9 +610,9 @@ function StarMapInner({
     const fitDist =
       (radius / Math.tan(((camera.fov / 2) * Math.PI) / 180) / Math.min(1, camera.aspect || 1)) *
       1.18;
-    // tilted overhead view (~55° elevation), like a galaxy astrophoto
+    // gentle overhead tilt (~32°): wide, horizontally spreading composition
     fg.cameraPosition(
-      { x: cx, y: cy + fitDist * 0.82, z: cz + fitDist * 0.57 },
+      { x: cx, y: cy + fitDist * 0.53, z: cz + fitDist * 0.85 },
       { x: cx, y: cy, z: cz },
       duration,
     );
@@ -686,9 +698,19 @@ function StarMapInner({
       rot.rings.set(i, { omega, theta: 0, pivot });
     }
 
-    // per-ring dust accumulators
-    const dustPos: number[][] = Array.from({ length: RING_COUNT }, () => []);
-    const dustCol: number[][] = Array.from({ length: RING_COUNT }, () => []);
+    // per-ring, per-layer dust accumulators: three depth layers so the sea of
+    // particles reads crisp and dense up close, finer and sparser far out
+    const DUST_LAYERS = [
+      { grains: 16, sigma: 20, size: 2.8, opacity: 0.8, bright: 1 },
+      { grains: 30, sigma: 52, size: 1.6, opacity: 0.55, bright: 0.7 },
+      { grains: 44, sigma: 105, size: 1.0, opacity: 0.38, bright: 0.5 },
+    ];
+    const dustPos: number[][][] = DUST_LAYERS.map(() =>
+      Array.from({ length: RING_COUNT }, () => []),
+    );
+    const dustCol: number[][][] = DUST_LAYERS.map(() =>
+      Array.from({ length: RING_COUNT }, () => []),
+    );
 
     for (const [gid, members] of byGroup) {
       const color = new THREE.Color(groupColor.get(gid) ?? '#b8c8ea');
@@ -701,26 +723,45 @@ function StarMapInner({
         });
       }
 
-      // --- star dust: grains scattered along the arm around its members,
-      // flattened into the disc, bucketed into the ring they fall in.
-      const grainsPerMember = 16;
-      const sigma = 26;
-      for (const seed of members) {
-        for (let i = 0; i < grainsPerMember; i++) {
-          const g1 = () => (Math.random() + Math.random() + Math.random() - 1.5) * sigma;
-          const px = (seed.x ?? 0) + g1();
-          const py = (seed.y ?? 0) + g1() * 0.3; // keep the disc thin
-          const pz = (seed.z ?? 0) + g1();
-          const roll = Math.random();
-          if (roll < 0.45) tmp.copy(DUST_AMBER).lerp(color, 0.3);
-          else if (roll < 0.8) tmp.copy(DUST_COOL).lerp(color, 0.45);
-          else if (roll < 0.88) tmp.copy(DUST_PINK);
-          else tmp.copy(DUST_BRIGHT);
-          tmp.multiplyScalar(0.35 + Math.random() * 0.65);
-          const ring = ringOf(px, pz);
-          dustPos[ring].push(px - gx, py - gy, pz - gz);
-          dustCol[ring].push(tmp.r, tmp.g, tmp.b);
+      // --- star dust: golden-orange particle sea layered around the members
+      for (let li = 0; li < DUST_LAYERS.length; li++) {
+        const layer = DUST_LAYERS[li];
+        for (const seed of members) {
+          for (let i = 0; i < layer.grains; i++) {
+            const g1 = () =>
+              (Math.random() + Math.random() + Math.random() - 1.5) * layer.sigma;
+            const px = (seed.x ?? 0) + g1();
+            const py = (seed.y ?? 0) + g1() * 0.3; // keep the disc thin
+            const pz = (seed.z ?? 0) + g1();
+            const roll = Math.random();
+            if (roll < 0.62) tmp.copy(DUST_AMBER).lerp(color, 0.18);
+            else if (roll < 0.86) tmp.copy(DUST_COOL).lerp(color, 0.4);
+            else if (roll < 0.92) tmp.copy(DUST_PINK);
+            else tmp.copy(DUST_BRIGHT);
+            tmp.multiplyScalar((0.35 + Math.random() * 0.65) * layer.bright);
+            const ring = ringOf(px, pz);
+            dustPos[li][ring].push(px - gx, py - gy, pz - gz);
+            dustCol[li][ring].push(tmp.r, tmp.g, tmp.b);
+          }
         }
+      }
+
+      // --- floating dynasty/community label, like a data annotation adrift
+      const name = groupName.get(gid);
+      if (name && members.length > 3) {
+        const mid = members[Math.floor(members.length * 0.55)];
+        const label = new SpriteText(name, 11, '#9aa3bd');
+        label.fontFace = '"Noto Serif SC", "Songti SC", serif';
+        label.fontWeight = '400';
+        label.material.transparent = true;
+        label.material.opacity = 0.5;
+        label.material.depthWrite = false;
+        label.position.set(
+          (mid.x ?? 0) - gx,
+          (mid.y ?? 0) - gy + 30,
+          (mid.z ?? 0) - gz,
+        );
+        rot.rings.get(ringOf(mid.x ?? 0, mid.z ?? 0))!.pivot!.add(label);
       }
 
       // --- gauze wisps sampled along the arm, attached to their ring pivot
@@ -751,25 +792,78 @@ function StarMapInner({
       }
     }
 
-    // upload per-ring dust point clouds
-    for (let i = 0; i < RING_COUNT; i++) {
-      if (dustPos[i].length === 0) continue;
-      const dustGeo = new THREE.BufferGeometry();
-      dustGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(dustPos[i]), 3));
-      dustGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(dustCol[i]), 3));
-      const dustMat = new THREE.PointsMaterial({
-        size: 3.4,
+    // upload per-layer, per-ring dust point clouds
+    for (let li = 0; li < DUST_LAYERS.length; li++) {
+      const layer = DUST_LAYERS[li];
+      for (let i = 0; i < RING_COUNT; i++) {
+        if (dustPos[li][i].length === 0) continue;
+        const dustGeo = new THREE.BufferGeometry();
+        dustGeo.setAttribute(
+          'position',
+          new THREE.BufferAttribute(new Float32Array(dustPos[li][i]), 3),
+        );
+        dustGeo.setAttribute(
+          'color',
+          new THREE.BufferAttribute(new Float32Array(dustCol[li][i]), 3),
+        );
+        const dustMat = new THREE.PointsMaterial({
+          size: layer.size,
+          map: haloTexture,
+          vertexColors: true,
+          sizeAttenuation: true,
+          transparent: true,
+          opacity: layer.opacity,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        });
+        const dust = new THREE.Points(dustGeo, dustMat);
+        dust.renderOrder = -1;
+        rot.rings.get(i)!.pivot!.add(dust);
+      }
+    }
+
+    // --- energy tide: cyan/ice-blue particle stream flowing from the upper
+    // left toward the galactic core (static, independent of the rotation)
+    {
+      const streamCount = 9000;
+      const sPos = new Float32Array(streamCount * 3);
+      const sCol = new Float32Array(streamCount * 3);
+      const P0 = new THREE.Vector3(-640, 170, -400);
+      const P1 = new THREE.Vector3(-270, 80, -150);
+      const P2 = new THREE.Vector3(0, 6, 0);
+      const bez = new THREE.QuadraticBezierCurve3(P0, P1, P2);
+      const pt = new THREE.Vector3();
+      for (let i = 0; i < streamCount; i++) {
+        const t = Math.pow(Math.random(), 0.8); // denser toward the core
+        bez.getPoint(t, pt);
+        const spreadT = 42 * (1 - t * 0.55);
+        sPos[i * 3] = pt.x + gauss3() * spreadT;
+        sPos[i * 3 + 1] = pt.y + gauss3() * spreadT * 0.5;
+        sPos[i * 3 + 2] = pt.z + gauss3() * spreadT;
+        if (t < 0.45) tmp.copy(TIDE_ICE).lerp(TIDE_TEAL, t / 0.45);
+        else tmp.copy(TIDE_TEAL).lerp(TIDE_LAKE, (t - 0.45) / 0.55);
+        tmp.multiplyScalar((0.3 + Math.random() * 0.7) * (0.55 + t * 0.45));
+        sCol[i * 3] = tmp.r;
+        sCol[i * 3 + 1] = tmp.g;
+        sCol[i * 3 + 2] = tmp.b;
+      }
+      const streamGeo = new THREE.BufferGeometry();
+      streamGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3));
+      streamGeo.setAttribute('color', new THREE.BufferAttribute(sCol, 3));
+      const streamMat = new THREE.PointsMaterial({
+        size: 1.7,
         map: haloTexture,
         vertexColors: true,
         sizeAttenuation: true,
         transparent: true,
-        opacity: 0.7,
+        opacity: 0.55,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
       });
-      const dust = new THREE.Points(dustGeo, dustMat);
-      dust.renderOrder = -1;
-      rot.rings.get(i)!.pivot!.add(dust);
+      const stream = new THREE.Points(streamGeo, streamMat);
+      stream.position.set(gx, gy, gz);
+      stream.renderOrder = -1;
+      group.add(stream);
     }
 
     // --- central bulge: a dense knot of warm stars filling the core --------
@@ -807,26 +901,28 @@ function StarMapInner({
       rot.rings.get(0)!.pivot!.add(bulge);
     }
 
-    // --- warm galactic-core glow, dimmed ~80%: the bulge stars do the work
+    // --- blazing white-blue star core: volumetric glow layers + a small
+    // intensely bright kernel (bloom flares it) + radiating diffraction rays
     const coreSpecs = [
-      { color: '#fff3dc', scale: 380, opacity: 0.04 },
-      { color: '#fff8e8', scale: 210, opacity: 0.04 },
-      { color: '#ffffff', scale: 110, opacity: 0.035 },
+      { map: nebulaTexture, color: '#26406e', scale: 440, opacity: 0.14 }, // volumetric haze
+      { map: haloTexture, color: '#9fc4ff', scale: 150, opacity: 0.28 },
+      { map: haloTexture, color: '#dfeaff', scale: 80, opacity: 0.45 },
+      { map: haloTexture, color: '#ffffff', scale: 30, opacity: 0.95 }, // kernel
+      { map: spikeTexture, color: '#cfe2ff', scale: 300, opacity: 0.2 }, // rays
     ];
     for (const spec of coreSpecs) {
       const mat = new THREE.SpriteMaterial({
-        map: nebulaTexture,
+        map: spec.map,
         color: spec.color,
         transparent: true,
         opacity: spec.opacity,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
-        rotation: Math.random() * Math.PI,
       });
       const sprite = new THREE.Sprite(mat);
       sprite.position.set(gx, gy, gz);
       sprite.scale.set(spec.scale, spec.scale, 1);
-      sprite.renderOrder = -2;
+      sprite.renderOrder = 0;
       group.add(sprite);
     }
   }, [groupColor, nebulaTexture, haloTexture]);

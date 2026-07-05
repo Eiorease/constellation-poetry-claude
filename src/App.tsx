@@ -54,35 +54,35 @@ export default function App() {
     return seen;
   }, [data]);
 
-  // --- filtered graph (node/link object identity preserved) -----------------
-  const filtered = useMemo(() => {
-    if (!data) return { nodes: [], links: [] };
-    const passNode = (n: PoetNode) =>
-      (filters.dynasties.size === 0 || filters.dynasties.has(n.dynasty)) &&
-      (filters.groups.size === 0 || filters.groups.has(n.group));
-    const nodes = data.nodes.filter(passNode);
-    const ids = new Set(nodes.map((n) => n.id));
-    const links = data.links.filter(
-      (l) =>
-        ids.has(endpointId(l.source)) &&
-        ids.has(endpointId(l.target)) &&
-        (filters.types.size === 0 || filters.types.has(l.type)),
-    );
-    return { nodes, links };
+  // --- filter → highlight sets (nodes are never removed from the graph:
+  // matching content is highlighted, the rest is dimmed by 60%) -------------
+  const filterNodeIds = useMemo<ReadonlySet<string> | null>(() => {
+    if (!data) return null;
+    const { dynasties, groups } = filters;
+    if (dynasties.size === 0 && groups.size === 0) return null;
+    const ids = new Set<string>();
+    for (const n of data.nodes) {
+      if (
+        (dynasties.size === 0 || dynasties.has(n.dynasty)) &&
+        (groups.size === 0 || groups.has(n.group))
+      ) {
+        ids.add(n.id);
+      }
+    }
+    return ids;
   }, [data, filters]);
 
-  // Clear selection if it fell out of the filtered view.
-  useEffect(() => {
-    if (selectedNode && !filtered.nodes.includes(selectedNode)) setSelectedNode(null);
-    if (selectedLink && !filtered.links.includes(selectedLink)) setSelectedLink(null);
-  }, [filtered, selectedNode, selectedLink]);
+  const filterTypes = useMemo<ReadonlySet<RelationType> | null>(
+    () => (filters.types.size > 0 ? filters.types : null),
+    [filters],
+  );
 
   // --- highlight sets --------------------------------------------------------
   const { highlightNodeIds, highlightLinkKeys } = useMemo(() => {
     if (selectedNode) {
       const nodeIds = new Set<string>([selectedNode.id]);
       const linkKeys = new Set<string>();
-      for (const l of filtered.links) {
+      for (const l of data?.links ?? []) {
         const s = endpointId(l.source);
         const t = endpointId(l.target);
         if (s === selectedNode.id || t === selectedNode.id) {
@@ -103,7 +103,7 @@ export default function App() {
       };
     }
     return { highlightNodeIds: EMPTY_SET, highlightLinkKeys: EMPTY_SET };
-  }, [selectedNode, selectedLink, filtered.links]);
+  }, [selectedNode, selectedLink, data]);
 
   // --- interaction handlers --------------------------------------------------
   const handleNodeClick = useCallback((node: PoetNode) => {
@@ -160,13 +160,15 @@ export default function App() {
     <div className="relative h-full w-full overflow-hidden">
       {/* 3D star map */}
       <StarMap
-        nodes={filtered.nodes}
-        links={filtered.links}
+        nodes={data.nodes}
+        links={data.links}
         groups={data.groups}
         selectedNodeId={selectedNode?.id ?? null}
         selectedLink={selectedLink}
         highlightNodeIds={highlightNodeIds}
         highlightLinkKeys={highlightLinkKeys}
+        filterNodeIds={filterNodeIds}
+        filterTypes={filterTypes}
         onNodeClick={handleNodeClick}
         onLinkClick={handleLinkClick}
         onBackgroundClick={clearSelection}
@@ -182,12 +184,12 @@ export default function App() {
             诗人星图
           </h1>
           <p className="mt-1 hidden text-[11px] tracking-[0.3em] text-ink-400 sm:block">
-            千年唱和 · 星汉灿烂 — {filtered.nodes.length} 位诗人 · {filtered.links.length} 段情谊
+            千年唱和 · 星汉灿烂 — {data.nodes.length} 位诗人 · {data.links.length} 段情谊
           </p>
         </div>
         <div className="pointer-events-auto">
           <SearchBar
-            nodes={filtered.nodes}
+            nodes={data.nodes}
             onSelect={handleSearchSelect}
             onActivity={() => apiRef.current?.notifyInteraction()}
           />
@@ -238,7 +240,7 @@ export default function App() {
         {selectedNode && (
           <DetailPanel
             node={selectedNode}
-            links={filtered.links}
+            links={data.links}
             nodeById={nodeById}
             groups={data.groups}
             onSelectNode={handleNodeClick}

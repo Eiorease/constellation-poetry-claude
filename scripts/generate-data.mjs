@@ -50,8 +50,8 @@ const GROUPS = [
 // Spiral-galaxy layout: each community (in dynasty/chronological order) is a
 // spiral arm winding out of the galactic core in the XZ plane, with a thin
 // disc profile in Y (thicker toward the central bulge).
-const ARM_R_CORE = 50; // where arms emerge from the bulge
-const ARM_R_MAX = 310; // outer edge of the disc (compact, dense galaxy)
+const ARM_R_CORE = 90; // arms emerge outside the bulge, so they never merge
+const ARM_R_MAX = 300; // outer edge of the disc (compact, dense galaxy)
 const ARM_WIND = 2.6; // radians an arm winds from core to edge
 
 // ---------------------------------------------------------------------------
@@ -505,15 +505,15 @@ for (const g of GROUPS) {
   const phi = (g.id / GROUPS.length) * Math.PI * 2;
   members.forEach((n, i) => {
     // normalized position along the arm, with jitter
-    const s = Math.max(0.02, Math.min(1, (i + 0.5) / members.length + (rand() - 0.5) * 0.12));
-    const r = ARM_R_CORE + s * (ARM_R_MAX - ARM_R_CORE) + gauss() * 10;
+    const s = Math.max(0.02, Math.min(1, (i + 0.5) / members.length + (rand() - 0.5) * 0.08));
+    const r = ARM_R_CORE + s * (ARM_R_MAX - ARM_R_CORE) + gauss() * 7;
     const theta = phi + s * ARM_WIND;
-    // wide arm bands so neighbouring arms almost touch (no hollow gaps);
-    // disc thickens near the bulge
-    const scatter = 17 + 27 * s;
+    // narrow arm bands (~30% tighter): each arm stays a crisp, separate lane
+    // that never blends into its neighbours; disc thickens near the bulge
+    const scatter = 8 + 14 * s;
     n.x = r * Math.cos(theta) + gauss() * scatter;
     n.z = r * Math.sin(theta) + gauss() * scatter;
-    n.y = gauss() * (22 * Math.exp(-r / 120) + 6);
+    n.y = gauss() * (20 * Math.exp(-r / 130) + 5);
   });
 }
 for (const n of nodes) delete n.isHub;

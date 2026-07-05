@@ -10,6 +10,7 @@ import {
   type GroupInfo,
   type PoemLink,
   type PoetNode,
+  type RelationType,
 } from '../types';
 
 export interface StarMapApi {
@@ -29,6 +30,10 @@ interface Props {
   highlightNodeIds: ReadonlySet<string>;
   /** link keys "src|tgt" highlighted */
   highlightLinkKeys: ReadonlySet<string>;
+  /** filter: matching nodes stay bright, the rest dims 60%; null = no filter */
+  filterNodeIds: ReadonlySet<string> | null;
+  /** filter: links of these relation types light up; null = no type filter */
+  filterTypes: ReadonlySet<RelationType> | null;
   onNodeClick: (node: PoetNode) => void;
   onLinkClick: (link: PoemLink) => void;
   onBackgroundClick: () => void;
@@ -262,6 +267,8 @@ function StarMapInner({
   selectedLink,
   highlightNodeIds,
   highlightLinkKeys,
+  filterNodeIds,
+  filterTypes,
   onNodeClick,
   onLinkClick,
   onBackgroundClick,
@@ -281,6 +288,7 @@ function StarMapInner({
     linksDirty: false,
   });
   const selectionActiveRef = useRef(false);
+  const filterTypesRef = useRef<ReadonlySet<RelationType> | null>(null);
   const prefersReducedMotion = useMemo(
     () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
     [],
@@ -508,8 +516,21 @@ function StarMapInner({
   );
 
   // --- imperative highlight styling (no object rebuild) ---------------------
+  // dim/restore the galaxy dressing (dust, wisps, glows) by a factor
+  const applyDressingDim = useCallback((factor: number) => {
+    nebulaGroupRef.current?.traverse((o) => {
+      const mat = (o as THREE.Sprite | THREE.Points).material as
+        | (THREE.Material & { opacity: number; userData: { baseOpacity?: number } })
+        | undefined;
+      if (mat && !Array.isArray(mat) && mat.userData?.baseOpacity !== undefined) {
+        mat.opacity = mat.userData.baseOpacity * factor;
+      }
+    });
+  }, []);
+
   useEffect(() => {
     const hasSelection = highlightNodeIds.size > 0;
+    const filterActive = filterNodeIds !== null || filterTypes !== null;
     const wasActive = selectionActiveRef.current;
     selectionActiveRef.current = hasSelection;
     if (hasSelection) {
@@ -520,18 +541,30 @@ function StarMapInner({
       // closing the detail panel: restart the 2s idle countdown
       rotationRef.current.lastInteract = performance.now();
     }
-    // fade the galaxy dressing away while a selection is active
+    // fade the galaxy dressing away while a selection is active,
+    // dim it while a filter highlights part of the sky
     if (nebulaGroupRef.current) nebulaGroupRef.current.visible = !hasSelection;
+    applyDressingDim(filterActive ? 0.35 : 1);
     for (const [id, v] of visualsRef.current) {
       const isLit = highlightNodeIds.has(id);
       const isSelected = id === selectedNodeId;
       if (!hasSelection) {
-        v.sphereMat.color.copy(v.baseColor);
-        v.sphereMat.opacity = 1;
-        v.haloMat.color.copy(v.baseColor);
-        v.haloMat.opacity = 0.05;
-        v.label.visible = !v.node.generated;
-        v.label.color = '#dde0ee';
+        const matches = !filterNodeIds || filterNodeIds.has(id);
+        if (matches) {
+          v.sphereMat.color.copy(v.baseColor);
+          v.sphereMat.opacity = 1;
+          v.haloMat.color.copy(v.baseColor);
+          v.haloMat.opacity = filterNodeIds ? 0.12 : 0.05;
+          v.label.visible = !v.node.generated;
+          v.label.color = '#dde0ee';
+        } else {
+          // not matching the filter: 60% dimmer, restored when cleared
+          v.sphereMat.color.copy(v.baseColor).multiplyScalar(0.4);
+          v.sphereMat.opacity = 0.7;
+          v.haloMat.color.copy(v.baseColor);
+          v.haloMat.opacity = 0.02;
+          v.label.visible = false;
+        }
       } else if (isSelected) {
         v.sphereMat.color.copy(v.baseColor).lerp(WHITE, 0.55);
         v.sphereMat.opacity = 1;
@@ -553,7 +586,16 @@ function StarMapInner({
         v.label.visible = false;
       }
     }
-  }, [highlightNodeIds, selectedNodeId, graphData]);
+  }, [highlightNodeIds, selectedNodeId, graphData, filterNodeIds, filterTypes, applyDressingDim]);
+
+  // Filter changes pause the rotation briefly and re-align link geometry
+  // (type-filtered links become visible at the current rotated positions).
+  useEffect(() => {
+    filterTypesRef.current = filterTypes;
+    notifyInteraction();
+    syncLinkGeometries();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterTypes, filterNodeIds]);
 
   // Drop stale visual registry entries when the node set changes.
   useEffect(() => {
@@ -566,6 +608,18 @@ function StarMapInner({
   // --- link styling ----------------------------------------------------------
   const selectionActive = highlightNodeIds.size > 0 || selectedLink !== null;
 
+  // does a link match the active filters (type + both endpoints)?
+  const linkMatchesFilter = useCallback(
+    (l: PoemLink) => {
+      if (!filterTypes || !filterTypes.has(l.type)) return false;
+      if (!filterNodeIds) return true;
+      return (
+        filterNodeIds.has(endpointId(l.source)) && filterNodeIds.has(endpointId(l.target))
+      );
+    },
+    [filterTypes, filterNodeIds],
+  );
+
   const linkColor = useCallback(
     (l: PoemLink) => {
       const base = RELATION_COLORS[l.type] ?? '#8a8fa3';
@@ -575,22 +629,25 @@ function StarMapInner({
           ? hexToRgba(base, 0.9)
           : hexToRgba(base, 0.03);
       }
+      if (filterTypes) return hexToRgba(base, 0.1 + (l.weight / 10) * 0.3);
       // brighter with weight; kept faint so clusters read as glowing gas,
       // not a wireframe mesh
       return hexToRgba(base, 0.03 + (l.weight / 10) * 0.2);
     },
-    [selectionActive, highlightLinkKeys, selectedLink],
+    [selectionActive, highlightLinkKeys, selectedLink, filterTypes],
   );
 
   // Hide almost all links by default so the point cloud never becomes a
   // hairball: only the strongest documented bonds stay as faint hints.
-  // A selection lights up that poet's first-degree links (+ particles).
+  // A selection lights up that poet's first-degree links (+ particles);
+  // a relation-type filter lights up all matching links.
   const linkVisibility = useCallback(
     (l: PoemLink) => {
       if (selectionActive) return l === selectedLink || highlightLinkKeys.has(linkKey(l));
+      if (filterTypes) return linkMatchesFilter(l);
       return !l.generated && l.weight >= 9;
     },
-    [selectionActive, highlightLinkKeys, selectedLink],
+    [selectionActive, highlightLinkKeys, selectedLink, filterTypes, linkMatchesFilter],
   );
 
   const linkParticles = useCallback(
@@ -708,10 +765,11 @@ function StarMapInner({
     // particles reads crisp and dense up close, finer and sparser far out
     // sizes are in screen pixels (sizeAttenuation off): grains stay crisp
     // points at any zoom instead of ballooning into blobs up close
+    // sigmas kept inside the (narrow) arm band so arms stay clean lanes
     const DUST_LAYERS = [
-      { grains: 16, sigma: 20, size: 2.8, opacity: 0.65, bright: 1 },
-      { grains: 30, sigma: 52, size: 1.9, opacity: 0.5, bright: 0.7 },
-      { grains: 44, sigma: 105, size: 1.2, opacity: 0.35, bright: 0.5 },
+      { grains: 16, sigma: 12, size: 2.8, opacity: 0.65, bright: 1 },
+      { grains: 30, sigma: 26, size: 1.9, opacity: 0.5, bright: 0.7 },
+      { grains: 44, sigma: 42, size: 1.2, opacity: 0.3, bright: 0.5 },
     ];
     const dustPos: number[][][] = DUST_LAYERS.map(() =>
       Array.from({ length: RING_COUNT }, () => []),
@@ -763,6 +821,7 @@ function StarMapInner({
         label.fontWeight = '400';
         label.material.transparent = true;
         label.material.opacity = 0.5;
+        label.material.userData.baseOpacity = 0.5;
         label.material.depthWrite = false;
         label.position.set(
           (mid.x ?? 0) - gx,
@@ -787,6 +846,7 @@ function StarMapInner({
           blending: THREE.AdditiveBlending,
           rotation: Math.random() * Math.PI * 2,
         });
+        mat.userData.baseOpacity = mat.opacity;
         const sprite = new THREE.Sprite(mat);
         const scale = 80 + Math.random() * 50;
         sprite.position.set(
@@ -824,6 +884,7 @@ function StarMapInner({
           depthWrite: false,
           blending: THREE.AdditiveBlending,
         });
+        dustMat.userData.baseOpacity = layer.opacity;
         const dust = new THREE.Points(dustGeo, dustMat);
         dust.renderOrder = -1;
         rot.rings.get(i)!.pivot!.add(dust);
@@ -868,6 +929,7 @@ function StarMapInner({
         depthWrite: false,
         blending: THREE.AdditiveBlending,
       });
+      streamMat.userData.baseOpacity = 0.55;
       const stream = new THREE.Points(streamGeo, streamMat);
       stream.position.set(gx, gy, gz);
       stream.renderOrder = -1;
@@ -904,6 +966,7 @@ function StarMapInner({
         depthWrite: false,
         blending: THREE.AdditiveBlending,
       });
+      bulgeMat.userData.baseOpacity = 0.8;
       const bulge = new THREE.Points(bulgeGeo, bulgeMat);
       bulge.renderOrder = -1;
       rot.rings.get(0)!.pivot!.add(bulge);
@@ -927,6 +990,7 @@ function StarMapInner({
         depthWrite: false,
         blending: THREE.AdditiveBlending,
       });
+      mat.userData.baseOpacity = spec.opacity;
       const sprite = new THREE.Sprite(mat);
       sprite.position.set(gx, gy, gz);
       sprite.scale.set(spec.scale, spec.scale, 1);
@@ -1022,6 +1086,8 @@ function StarMapInner({
         v.node.z = nz;
       }
       rot.linksDirty = true;
+      // type-filtered links stay visible while rotating: keep them attached
+      if (filterTypesRef.current) syncLinkGeometries();
     };
 
     if (import.meta.env.DEV) {
@@ -1072,8 +1138,8 @@ function StarMapInner({
       backgroundColor="#04050c"
       controlType="orbit"
       showNavInfo={false}
-      warmupTicks={70}
-      cooldownTicks={180}
+      warmupTicks={0}
+      cooldownTicks={30}
       onEngineStop={handleEngineStop}
       d3VelocityDecay={0.35}
       nodeThreeObject={nodeThreeObject}

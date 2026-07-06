@@ -346,7 +346,7 @@ function StarMapInner({
 
     // Background kept to the faintest texture: the people-stars ARE the
     // nebula, so the sky behind is near-black with sparse dim pinpricks.
-    const far = makeStarField(1800, 1500, 3400);
+    const far = makeStarField(5400, 1500, 3400);
     const farGeo = new THREE.BufferGeometry();
     farGeo.setAttribute('position', new THREE.BufferAttribute(far.positions, 3));
     farGeo.setAttribute('color', new THREE.BufferAttribute(far.colors, 3));
@@ -360,7 +360,7 @@ function StarMapInner({
     });
     const farStars = new THREE.Points(farGeo, farMat);
 
-    const near = makeStarField(180, 900, 2200);
+    const near = makeStarField(540, 900, 2200);
     const nearGeo = new THREE.BufferGeometry();
     nearGeo.setAttribute('position', new THREE.BufferAttribute(near.positions, 3));
     nearGeo.setAttribute('color', new THREE.BufferAttribute(near.colors, 3));
@@ -515,12 +515,12 @@ function StarMapInner({
         map: haloTexture,
         color: color.clone(),
         transparent: true,
-        opacity: 0.05,
+        opacity: 0.1,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
       });
       const halo = new THREE.Sprite(haloMat);
-      halo.scale.set(r * 4.5, r * 4.5, 1);
+      halo.scale.set(r * 5.5, r * 5.5, 1);
       g.add(halo);
 
       const label = new SpriteText(node.name, 3.6, '#dde0ee');
@@ -583,7 +583,7 @@ function StarMapInner({
           v.sphereMat.color.copy(v.baseColor);
           v.sphereMat.opacity = 1;
           v.haloMat.color.copy(v.baseColor);
-          v.haloMat.opacity = filterNodeIds ? 0.12 : 0.05;
+          v.haloMat.opacity = filterNodeIds ? 0.18 : 0.1;
           v.label.visible = !v.node.generated;
           v.label.color = '#dde0ee';
         } else {
@@ -796,9 +796,9 @@ function StarMapInner({
     // points at any zoom instead of ballooning into blobs up close
     // sigmas kept inside the (narrow) arm band so arms stay clean lanes
     const DUST_LAYERS = [
-      { grains: 16, sigma: 12, size: 2.8, opacity: 0.65, bright: 1 },
-      { grains: 30, sigma: 26, size: 1.9, opacity: 0.5, bright: 0.7 },
-      { grains: 44, sigma: 42, size: 1.2, opacity: 0.3, bright: 0.5 },
+      { grains: 48, sigma: 12, size: 2.8, opacity: 0.65, bright: 1 },
+      { grains: 90, sigma: 26, size: 1.9, opacity: 0.5, bright: 0.7 },
+      { grains: 132, sigma: 42, size: 1.2, opacity: 0.3, bright: 0.5 },
     ];
     const dustPos: number[][][] = DUST_LAYERS.map(() =>
       Array.from({ length: RING_COUNT }, () => []),
@@ -923,7 +923,7 @@ function StarMapInner({
     // --- energy tide: cyan/ice-blue particle stream flowing from the upper
     // left toward the galactic core (static, independent of the rotation)
     {
-      const streamCount = 9000;
+      const streamCount = 27000;
       const sPos = new Float32Array(streamCount * 3);
       const sCol = new Float32Array(streamCount * 3);
       const P0 = new THREE.Vector3(-640, 170, -400);
@@ -969,8 +969,8 @@ function StarMapInner({
     // same-palette motes filling the whole volume, so zoomed-in views float
     // inside a sea of particles instead of empty black space
     {
-      const haloCount = 2600;
-      const ambientCount = 5200;
+      const haloCount = 7800;
+      const ambientCount = 15600;
       const total = haloCount + ambientCount;
       const aPos = new Float32Array(total * 3);
       const aCol = new Float32Array(total * 3);
@@ -1020,7 +1020,7 @@ function StarMapInner({
 
     // --- central bulge: a dense knot of warm stars filling the core --------
     {
-      const bulgeCount = 500;
+      const bulgeCount = 1500;
       const bPos = new Float32Array(bulgeCount * 3);
       const bCol = new Float32Array(bulgeCount * 3);
       for (let i = 0; i < bulgeCount; i++) {

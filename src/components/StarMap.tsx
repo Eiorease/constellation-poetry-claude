@@ -73,6 +73,13 @@ const FAME_BURST_SCALE = [100, 76, 58, 44, 34];
 const FAME_BURST_OPACITY = [0.95, 0.8, 0.68, 0.58, 0.48];
 // radial light-beam length per tier (world units)
 const FAME_BEAM_LEN = [260, 195, 150, 110, 82];
+// star-size multiplier centre per fame tier (famous = larger). A random ±
+// jitter is added so the final factor lands within 0.8–1.5.
+const FAME_SIZE_CENTER = [1.42, 1.24, 1.06, 0.94, 0.86];
+function fameSizeMul(node: PoetNode): number {
+  const c = FAME_SIZE_CENTER[fameTier(node)];
+  return Math.max(0.8, Math.min(1.5, c + (Math.random() - 0.5) * 0.14));
+}
 
 /** Soft radial glow texture shared by every halo sprite. */
 function makeHaloTexture(): THREE.Texture {
@@ -304,9 +311,10 @@ function makeParticleMaterial(opts: {
         vColor = aColor;
         vec3 p = position;
         if (uMotion > 0.0) {
-          p.x += sin(uTime * (0.35 + aSeed.x * 0.6) + aSeed.y * 6.2831) * uMotion;
-          p.y += sin(uTime * (0.28 + aSeed.y * 0.5) + aSeed.z * 6.2831) * uMotion * 0.7;
-          p.z += cos(uTime * (0.32 + aSeed.z * 0.6) + aSeed.x * 6.2831) * uMotion;
+          // ~6x slower drift than before, so the sea barely stirs
+          p.x += sin(uTime * (0.058 + aSeed.x * 0.10) + aSeed.y * 6.2831) * uMotion;
+          p.y += sin(uTime * (0.047 + aSeed.y * 0.08) + aSeed.z * 6.2831) * uMotion * 0.7;
+          p.z += cos(uTime * (0.053 + aSeed.z * 0.10) + aSeed.x * 6.2831) * uMotion;
         }
         float period = 0.5 + aSeed.x;           // 0.5–1.5 s
         float br = 0.5 + 0.5 * sin(uTime * 6.2831853 / period + aSeed.y * 6.2831);
@@ -340,13 +348,14 @@ function makeParticleGeometry(
   positions: Float32Array,
   colors: Float32Array,
   baseSize: number,
-  sizeVar = 0.55,
 ): THREE.BufferGeometry {
   const n = positions.length / 3;
   const size = new Float32Array(n);
   const seed = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
-    size[i] = baseSize * (1 - sizeVar * Math.random());
+    // per-particle size spread of 10%–50% (each grain is 50%–90% of base),
+    // pixel-clamped in the shader so it never grows past a star
+    size[i] = baseSize * (0.5 + Math.random() * 0.4);
     seed[i * 3] = Math.random();
     seed[i * 3 + 1] = Math.random();
     seed[i * 3 + 2] = Math.random();
@@ -365,12 +374,15 @@ interface NodeVisual {
   sphereMat: THREE.MeshBasicMaterial;
   bodyMat: THREE.SpriteMaterial;
   haloMat: THREE.SpriteMaterial;
-  breathMat: THREE.SpriteMaterial;
   label: SpriteText;
   baseColor: THREE.Color;
   /** breathing phase & angular speed (period 1–2 s) */
   phase: number;
   bspeed: number;
+  /** per-star ambient drift: bounded offset within the arm */
+  drift: THREE.Vector3;
+  driftSpeed: number;
+  driftPhase: number;
 }
 
 /**
@@ -458,6 +470,9 @@ function StarMapInner({
   // volumetric particle field revealed only while a poet is selected
   const selectionFieldRef = useRef<THREE.Points | null>(null);
   const burstStartRef = useRef(0);
+  const burstBaseRef = useRef({ h: 0, glow: 0 });
+  // current highlight set, read by the per-frame breathing loop
+  const highlightIdsRef = useRef<ReadonlySet<string>>(new Set());
 
   const notifyInteraction = useCallback(() => {
     rotationRef.current.lastInteract = performance.now();
@@ -486,37 +501,11 @@ function StarMapInner({
     });
     const glowSprite = new THREE.Sprite(glow);
 
-    // Extremely fine light beams radiating from the star body. Two sets:
-    //  H — lying in the galactic plane (horizontal, y≈0), shown immediately;
-    //  V — perpendicular to it (out of the plane), revealed ~1 s later.
-    // Each beam fades center→tip (grayscale vertex color × material color).
-    const buildBeams = (count: number, perpendicular: boolean) => {
-      const pos = new Float32Array(count * 2 * 3);
-      const col = new Float32Array(count * 2 * 3);
-      for (let i = 0; i < count; i++) {
-        const len = 0.5 + Math.random() * 0.5;
-        let dx: number, dy: number, dz: number;
-        if (!perpendicular) {
-          // in-plane: azimuth around Y, essentially flat
-          const a = Math.random() * Math.PI * 2;
-          dx = Math.cos(a) * len;
-          dz = Math.sin(a) * len;
-          dy = (Math.random() - 0.5) * 0.06 * len;
-        } else {
-          // perpendicular fan: strong vertical component, thin around a
-          // random vertical plane through the star
-          const a = Math.random() * Math.PI * 2;
-          const el = (Math.random() - 0.5) * Math.PI; // -90°..90°
-          dy = Math.sin(el) * len;
-          const h = Math.cos(el) * 0.16 * len; // little horizontal spread
-          dx = Math.cos(a) * h;
-          dz = Math.sin(a) * h;
-        }
-        pos[i * 6 + 3] = dx;
-        pos[i * 6 + 4] = dy;
-        pos[i * 6 + 5] = dz;
-        col[i * 6] = col[i * 6 + 1] = col[i * 6 + 2] = 1; // bright at body
-      }
+    // Extremely fine light beams. The H set radiates flat from the star body
+    // (in-plane, y≈0). The V set does NOT come from the body — each vertical
+    // hair sprouts from a random point ALONG one of the horizontal rays and
+    // rises perpendicular to the plane. Each segment fades bright→tip.
+    const mkLine = (pos: Float32Array, col: Float32Array) => {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
       geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
@@ -528,8 +517,48 @@ function StarMapInner({
       });
       return { mat, seg: new THREE.LineSegments(geo, mat) };
     };
-    const h = buildBeams(180, false);
-    const v = buildBeams(150, true);
+
+    const buildHorizontal = (count: number) => {
+      const pos = new Float32Array(count * 2 * 3);
+      const col = new Float32Array(count * 2 * 3);
+      const dirs: { a: number; len: number }[] = [];
+      for (let i = 0; i < count; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const len = 0.5 + Math.random() * 0.5;
+        dirs.push({ a, len });
+        pos[i * 6 + 3] = Math.cos(a) * len;
+        pos[i * 6 + 4] = (Math.random() - 0.5) * 0.05 * len;
+        pos[i * 6 + 5] = Math.sin(a) * len;
+        col[i * 6] = col[i * 6 + 1] = col[i * 6 + 2] = 1; // bright at body
+      }
+      return { ...mkLine(pos, col), dirs };
+    };
+
+    const buildVerticalAlong = (
+      count: number,
+      dirs: { a: number; len: number }[],
+    ) => {
+      const pos = new Float32Array(count * 2 * 3);
+      const col = new Float32Array(count * 2 * 3);
+      for (let i = 0; i < count; i++) {
+        const ray = dirs[Math.floor(Math.random() * dirs.length)];
+        const at = 0.2 + Math.random() * 0.7; // random point along that ray
+        const bx = Math.cos(ray.a) * ray.len * at;
+        const bz = Math.sin(ray.a) * ray.len * at;
+        const vlen = (0.12 + Math.random() * 0.28) * (Math.random() < 0.5 ? -1 : 1);
+        pos[i * 6] = bx; // start on the horizontal ray (dim end fades down)
+        pos[i * 6 + 1] = 0;
+        pos[i * 6 + 2] = bz;
+        pos[i * 6 + 3] = bx + (Math.random() - 0.5) * 0.03;
+        pos[i * 6 + 4] = vlen; // rise/fall perpendicular to the plane
+        pos[i * 6 + 5] = bz + (Math.random() - 0.5) * 0.03;
+        // bright at the tip, fading back toward the horizontal ray
+        col[i * 6 + 3] = col[i * 6 + 4] = col[i * 6 + 5] = 1;
+      }
+      return mkLine(pos, col);
+    };
+    const h = buildHorizontal(420);
+    const v = buildVerticalAlong(320, h.dirs);
 
     group.add(h.seg, v.seg, glowSprite);
     burstRef.current = {
@@ -763,10 +792,14 @@ function StarMapInner({
       // overall brightness capped so close-ups stay crisp, not blown out
       if (!node.generated) color.lerp(new THREE.Color('#fff2d8'), 0.45);
       color.multiplyScalar(0.85);
-      const r = nodeRadius(node);
+      // fame-based random size: famous stars larger, minor stars smaller,
+      // final factor within 80%–150% of the base radius (req 3)
+      const r = nodeRadius(node) * fameSizeMul(node);
       const g = new THREE.Group();
 
-      // Small hard sphere: crisp bright kernel + reliable click target.
+      // Small hard sphere: crisp bright kernel + reliable click target. All
+      // node parts are world-space geometry/sprites, so they scale with
+      // perspective (near-big / far-small) at any view (req 5).
       const sphereMat = new THREE.MeshBasicMaterial({ color: color.clone(), transparent: true });
       const sphere = new THREE.Mesh(new THREE.SphereGeometry(r * 0.62, 12, 12), sphereMat);
       g.add(sphere);
@@ -797,20 +830,6 @@ function StarMapInner({
       halo.scale.set(r * 7, r * 7, 1);
       g.add(halo);
 
-      // Breathing glow: an additive pulse (period 1–2 s) driven per-frame so
-      // the star "breathes" like a soft respiration lamp.
-      const breathMat = new THREE.SpriteMaterial({
-        map: haloTexture,
-        color: color.clone(),
-        transparent: true,
-        opacity: 0,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-      });
-      const breath = new THREE.Sprite(breathMat);
-      breath.scale.set(r * 4.6, r * 4.6, 1);
-      g.add(breath);
-
       const label = new SpriteText(node.name, 3.6, '#dde0ee');
       label.fontFace = '"Noto Serif SC", "Songti SC", serif';
       label.fontWeight = '500';
@@ -819,17 +838,27 @@ function StarMapInner({
       label.visible = !node.generated;
       g.add(label);
 
+      // per-star ambient drift: a random unit direction and a speed jittered
+      // ±5–10% around a base, small amplitude so the star stays in its arm
+      const dphi = Math.random() * Math.PI * 2;
+      const dcos = Math.random() * 2 - 1;
+      const dsin = Math.sqrt(1 - dcos * dcos);
+      const drift = new THREE.Vector3(dsin * Math.cos(dphi), dcos * 0.5, dsin * Math.sin(dphi));
+      const sign = Math.random() < 0.5 ? -1 : 1;
+
       visualsRef.current.set(node.id, {
         node,
         obj: g,
         sphereMat,
         bodyMat,
         haloMat,
-        breathMat,
         label,
         baseColor: color,
         phase: Math.random() * Math.PI * 2,
         bspeed: (Math.PI * 2) / (1 + Math.random()), // period 1–2 s
+        drift,
+        driftSpeed: 0.16 * (1 + sign * (0.05 + Math.random() * 0.05)), // ±5–10%
+        driftPhase: Math.random() * Math.PI * 2,
       });
       return g;
     },
@@ -860,6 +889,7 @@ function StarMapInner({
     const wasActive = selectionActiveRef.current;
     selectionActiveRef.current = hasSelection;
     filterActiveRef.current = filterActive;
+    highlightIdsRef.current = highlightNodeIds;
     if (hasSelection) {
       // links become visible now: make sure their geometry matches the
       // rotated node positions (rotation is paused while selected)
@@ -909,15 +939,17 @@ function StarMapInner({
         const scale = FAME_BURST_SCALE[tier];
         const op = FAME_BURST_OPACITY[tier];
         const beamLen = FAME_BEAM_LEN[tier];
+        burst.group.visible = true;
         burst.glow.color.copy(tierColor);
         burst.glow.opacity = op * 0.5;
         burst.glowSprite.scale.set(scale * 0.55, scale * 0.55, 1);
         burst.beamMatH.color.copy(tierColor);
-        burst.beamMatH.opacity = op * 0.72;
+        burst.beamMatH.opacity = op * 0.95;
         burst.beamsH.scale.setScalar(beamLen);
         burst.beamMatV.color.copy(tierColor);
-        burst.beamMatV.opacity = 0; // revealed ~1 s later by the tick loop
-        burst.beamsV.scale.setScalar(beamLen * 0.9);
+        burst.beamMatV.opacity = 0; // sprouts ~1 s later, driven by the tick
+        burst.beamsV.scale.setScalar(beamLen);
+        burstBaseRef.current = { h: op * 0.95, glow: op * 0.5 };
         burstStartRef.current = performance.now();
         v.obj.add(burst.group);
         v.sphereMat.color.copy(tierColor).lerp(WHITE, 0.4);
@@ -946,8 +978,6 @@ function StarMapInner({
         v.haloMat.opacity = 0.01;
         v.label.visible = false;
       }
-      // breathing is paused (glow off) whenever a selection/filter is active
-      if (hasSelection || filterActive) v.breathMat.opacity = 0;
     }
   }, [highlightNodeIds, selectedNodeId, graphData, filterNodeIds, filterTypes, applyDressingDim, getBurst]);
 
@@ -1466,23 +1496,40 @@ function StarMapInner({
         m.uniforms.uScale.value = uScale;
       }
 
-      // node breathing (period 1–2 s) via an additive glow, only when idle
-      if (!selectionActiveRef.current && !filterActiveRef.current) {
+      // star breathing (period 1–2 s), modulating the visible body brightness:
+      //  · idle  → all named stars pulse with strong 60–80% contrast (req 9)
+      //  · select→ every non-highlighted star pulses with 40–60% contrast so
+      //            the rest of the sky keeps breathing behind the burst (req 10)
+      const sel = selectionActiveRef.current;
+      const filt = filterActiveRef.current;
+      if (!filt) {
+        const lit = highlightIdsRef.current;
         for (const v of visualsRef.current.values()) {
-          if (v.node.generated) continue; // only the named stars breathe
-          const b = 0.5 + 0.5 * Math.sin(time * v.bspeed + v.phase);
-          v.breathMat.opacity = 0.05 + b * 0.16;
-          v.breathMat.color.copy(v.baseColor);
+          if (sel && lit.has(v.node.id)) continue; // highlighted: stay steady
+          if (!sel && v.node.generated) continue; // idle: only named stars
+          const b = 0.5 + 0.5 * Math.sin(time * v.bspeed + v.phase); // 0..1
+          // idle: 0.30→1.00 (70% swing); selection-others: 0.18→0.40 (~55%)
+          const m = sel ? 0.18 + 0.22 * b : 0.3 + 0.7 * b;
+          v.sphereMat.color.copy(v.baseColor).multiplyScalar(m);
+          v.bodyMat.color.copy(v.baseColor).multiplyScalar(m);
+          v.bodyMat.opacity = sel ? 0.45 * (0.5 + b) : 0.9;
+          v.haloMat.opacity = (sel ? 0.05 : 0.12) * (0.5 + b);
         }
       }
 
-      // two-phase selection burst: horizontal beams first, the perpendicular
-      // fan fades in ~1 s after selection
+      // selection burst timeline: horizontal beams appear at once; the vertical
+      // hairs sprout ~1 s later; the whole set fades out 10 s after appearing.
       const burst = burstRef.current;
-      if (burst && burst.group.parent) {
+      if (burst && burst.group.parent && burst.group.visible) {
         const elapsed = now - burstStartRef.current;
+        const base = burstBaseRef.current;
         const vReveal = Math.min(1, Math.max(0, (elapsed - 1000) / 700));
-        burst.beamMatV.opacity = burst.beamMatH.opacity * vReveal;
+        const fade =
+          elapsed <= 10000 ? 1 : Math.max(0, 1 - (elapsed - 10000) / 1500);
+        burst.beamMatH.opacity = base.h * fade;
+        burst.beamMatV.opacity = base.h * vReveal * fade;
+        burst.glow.opacity = base.glow * fade;
+        if (fade <= 0) burst.group.visible = false;
       }
 
       // track the selected poet's HTML label to its on-screen position
@@ -1530,6 +1577,8 @@ function StarMapInner({
         if (g.pivot) g.pivot.rotation.y = g.theta;
       }
       const c = rot.center;
+      const time = now / 1000;
+      const DRIFT_AMP = 6; // small — each star wanders but stays in its arm
       for (const v of visualsRef.current.values()) {
         const orbit = rot.orbits.get(v.node.id);
         if (!orbit) continue;
@@ -1539,9 +1588,11 @@ function StarMapInner({
         const sinT = Math.sin(g.theta);
         const x = orbit.base.x * cosT + orbit.base.z * sinT;
         const z = -orbit.base.x * sinT + orbit.base.z * cosT;
-        const nx = c.x + x;
-        const ny = c.y + orbit.base.y;
-        const nz = c.z + z;
+        // per-star ambient drift with its own direction & speed (±5–10%)
+        const dw = Math.sin(time * v.driftSpeed + v.driftPhase) * DRIFT_AMP;
+        const nx = c.x + x + v.drift.x * dw;
+        const ny = c.y + orbit.base.y + v.drift.y * dw;
+        const nz = c.z + z + v.drift.z * dw;
         v.obj.position.set(nx, ny, nz);
         // keep data in sync: camera focus, tooltips, particles and link
         // geometry (synced on demand) all read node.x/y/z

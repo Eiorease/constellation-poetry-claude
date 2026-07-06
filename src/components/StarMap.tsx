@@ -71,6 +71,8 @@ function fameTier(n: PoetNode): number {
 const FAME_COLORS = ['#ffd257', '#b57bee', '#6b9fff', '#62d9ce', '#ffffff'];
 const FAME_BURST_SCALE = [100, 76, 58, 44, 34];
 const FAME_BURST_OPACITY = [0.95, 0.8, 0.68, 0.58, 0.48];
+// radial light-beam length per tier (world units)
+const FAME_BEAM_LEN = [260, 195, 150, 110, 82];
 
 /** Soft radial glow texture shared by every halo sprite. */
 function makeHaloTexture(): THREE.Texture {
@@ -309,6 +311,12 @@ function StarMapInner({
   });
   const selectionActiveRef = useRef(false);
   const filterTypesRef = useRef<ReadonlySet<RelationType> | null>(null);
+  // high-contrast HTML overlay label for the selected poet (always readable,
+  // always facing the camera, regardless of view angle)
+  const labelBoxRef = useRef<HTMLDivElement>(null);
+  const labelNameRef = useRef<HTMLSpanElement>(null);
+  const labelSubRef = useRef<HTMLSpanElement>(null);
+  const selectedNodeRef = useRef<PoetNode | null>(null);
   const prefersReducedMotion = useMemo(
     () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
     [],
@@ -333,6 +341,8 @@ function StarMapInner({
     raySprite: THREE.Sprite;
     raySpriteB: THREE.Sprite;
     glowSprite: THREE.Sprite;
+    beamMat: THREE.LineBasicMaterial;
+    beams: THREE.LineSegments;
   } | null>(null);
   const getBurst = useCallback(() => {
     if (burstRef.current) return burstRef.current;
@@ -351,8 +361,40 @@ function StarMapInner({
     const raySprite = new THREE.Sprite(rays);
     const raySpriteB = new THREE.Sprite(raysB);
     const glowSprite = new THREE.Sprite(glow);
-    group.add(glowSprite, raySprite, raySpriteB);
-    burstRef.current = { group, rays, raysB, glow, raySprite, raySpriteB, glowSprite };
+
+    // Radial light beams shooting out in all directions (unit length, fading
+    // center→tip via grayscale vertex colors ×material color); scaled per tier.
+    const RAY_COUNT = 220;
+    const bPos = new Float32Array(RAY_COUNT * 2 * 3);
+    const bCol = new Float32Array(RAY_COUNT * 2 * 3);
+    for (let i = 0; i < RAY_COUNT; i++) {
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      const len = 0.45 + Math.random() * 0.55;
+      const dx = Math.sin(phi) * Math.cos(theta) * len;
+      const dy = Math.sin(phi) * Math.sin(theta) * len;
+      const dz = Math.cos(phi) * len;
+      bPos[i * 6 + 3] = dx;
+      bPos[i * 6 + 4] = dy;
+      bPos[i * 6 + 5] = dz;
+      bCol[i * 6] = bCol[i * 6 + 1] = bCol[i * 6 + 2] = 1; // bright core
+      // tip stays 0 → invisible under additive blending
+    }
+    const beamGeo = new THREE.BufferGeometry();
+    beamGeo.setAttribute('position', new THREE.BufferAttribute(bPos, 3));
+    beamGeo.setAttribute('color', new THREE.BufferAttribute(bCol, 3));
+    const beamMat = new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const beams = new THREE.LineSegments(beamGeo, beamMat);
+
+    group.add(beams, glowSprite, raySprite, raySpriteB);
+    burstRef.current = {
+      group, rays, raysB, glow, raySprite, raySpriteB, glowSprite, beamMat, beams,
+    };
     return burstRef.current;
   }, [spikeTexture, haloTexture]);
   const groupColor = useMemo(() => {
@@ -399,7 +441,7 @@ function StarMapInner({
 
     // Background kept to the faintest texture: the people-stars ARE the
     // nebula, so the sky behind is near-black with sparse dim pinpricks.
-    const far = makeStarField(5400, 1500, 3400);
+    const far = makeStarField(10800, 1500, 3400);
     const farGeo = new THREE.BufferGeometry();
     farGeo.setAttribute('position', new THREE.BufferAttribute(far.positions, 3));
     farGeo.setAttribute('color', new THREE.BufferAttribute(far.colors, 3));
@@ -413,7 +455,7 @@ function StarMapInner({
     });
     const farStars = new THREE.Points(farGeo, farMat);
 
-    const near = makeStarField(540, 900, 2200);
+    const near = makeStarField(1080, 900, 2200);
     const nearGeo = new THREE.BufferGeometry();
     nearGeo.setAttribute('position', new THREE.BufferAttribute(near.positions, 3));
     nearGeo.setAttribute('color', new THREE.BufferAttribute(near.colors, 3));
@@ -660,19 +702,24 @@ function StarMapInner({
         burst.rays.color.copy(tierColor);
         burst.raysB.color.copy(tierColor);
         burst.glow.color.copy(tierColor);
+        burst.beamMat.color.copy(tierColor);
         burst.rays.opacity = op;
         burst.raysB.opacity = op * 0.55;
         burst.glow.opacity = op * 0.5;
+        burst.beamMat.opacity = op * 0.7;
         burst.raySprite.scale.set(scale, scale, 1);
         burst.raySpriteB.scale.set(scale * 0.68, scale * 0.68, 1);
         burst.glowSprite.scale.set(scale * 0.55, scale * 0.55, 1);
+        burst.beams.scale.setScalar(FAME_BEAM_LEN[tier]);
+        burst.beams.rotation.set(0, 0, 0);
         v.obj.add(burst.group);
         v.sphereMat.color.copy(tierColor).lerp(WHITE, 0.4);
         v.sphereMat.opacity = 1;
         v.haloMat.color.copy(tierColor);
         v.haloMat.opacity = 0.55;
-        v.label.visible = true;
-        v.label.color = '#ffffff';
+        // the selected star's own 3D label is hidden — the high-contrast
+        // HTML overlay label (always facing the camera) takes over
+        v.label.visible = false;
       } else if (isLit) {
         v.sphereMat.color.copy(v.baseColor).lerp(WHITE, 0.15);
         v.sphereMat.opacity = 1;
@@ -688,6 +735,28 @@ function StarMapInner({
       }
     }
   }, [highlightNodeIds, selectedNodeId, graphData, filterNodeIds, filterTypes, applyDressingDim, getBurst]);
+
+  // Update the HTML overlay label's text/color when the selection changes.
+  // (Position is tracked every frame in the bloom tick loop below.)
+  useEffect(() => {
+    const node = selectedNodeId
+      ? visualsRef.current.get(selectedNodeId)?.node ?? null
+      : null;
+    selectedNodeRef.current = node;
+    const box = labelBoxRef.current;
+    if (!box) return;
+    if (node) {
+      const tier = fameTier(node);
+      if (labelNameRef.current) labelNameRef.current.textContent = node.name;
+      if (labelSubRef.current) {
+        labelSubRef.current.textContent =
+          (node.courtesyName ? `字${node.courtesyName} · ` : '') + node.dynasty;
+      }
+      box.style.setProperty('--tier', FAME_COLORS[tier]);
+    } else {
+      box.style.display = 'none';
+    }
+  }, [selectedNodeId, graphData]);
 
   // Filter changes pause the rotation briefly and re-align link geometry
   // (type-filtered links become visible at the current rotated positions).
@@ -868,9 +937,9 @@ function StarMapInner({
     // points at any zoom instead of ballooning into blobs up close
     // sigmas kept inside the (narrow) arm band so arms stay clean lanes
     const DUST_LAYERS = [
-      { grains: 48, sigma: 12, size: 2.8, opacity: 0.65, bright: 1 },
-      { grains: 90, sigma: 26, size: 1.9, opacity: 0.5, bright: 0.7 },
-      { grains: 132, sigma: 42, size: 1.2, opacity: 0.3, bright: 0.5 },
+      { grains: 96, sigma: 12, size: 2.8, opacity: 0.6, bright: 1 },
+      { grains: 180, sigma: 26, size: 1.9, opacity: 0.46, bright: 0.7 },
+      { grains: 264, sigma: 42, size: 1.2, opacity: 0.28, bright: 0.5 },
     ];
     const dustPos: number[][][] = DUST_LAYERS.map(() =>
       Array.from({ length: RING_COUNT }, () => []),
@@ -995,7 +1064,7 @@ function StarMapInner({
     // --- energy tide: cyan/ice-blue particle stream flowing from the upper
     // left toward the galactic core (static, independent of the rotation)
     {
-      const streamCount = 27000;
+      const streamCount = 54000;
       const sPos = new Float32Array(streamCount * 3);
       const sCol = new Float32Array(streamCount * 3);
       const P0 = new THREE.Vector3(-640, 170, -400);
@@ -1041,8 +1110,8 @@ function StarMapInner({
     // same-palette motes filling the whole volume, so zoomed-in views float
     // inside a sea of particles instead of empty black space
     {
-      const haloCount = 7800;
-      const ambientCount = 15600;
+      const haloCount = 15600;
+      const ambientCount = 31200;
       const total = haloCount + ambientCount;
       const aPos = new Float32Array(total * 3);
       const aCol = new Float32Array(total * 3);
@@ -1092,7 +1161,7 @@ function StarMapInner({
 
     // --- central bulge: a dense knot of warm stars filling the core --------
     {
-      const bulgeCount = 1500;
+      const bulgeCount = 3000;
       const bPos = new Float32Array(bulgeCount * 3);
       const bCol = new Float32Array(bulgeCount * 3);
       for (let i = 0; i < bulgeCount; i++) {
@@ -1189,10 +1258,32 @@ function StarMapInner({
       const d = fg.camera().position.distanceTo(rotationRef.current.center);
       const t = Math.min(1, Math.max(0, (d - 140) / 760)); // 140 → 900
       bloom.strength = 0.1 + t * 0.5;
+
+      // slowly spin the light beams of the active burst for a shimmering feel
+      const burst = burstRef.current;
+      if (burst && burst.group.parent) {
+        burst.beams.rotation.y += 0.004;
+        burst.beams.rotation.x += 0.0022;
+      }
+
+      // track the selected poet's HTML label to its on-screen position
+      const box = labelBoxRef.current;
+      const node = selectedNodeRef.current;
+      if (box) {
+        if (node) {
+          const s = fg.graph2ScreenCoords(node.x ?? 0, node.y ?? 0, node.z ?? 0);
+          const onScreen =
+            s.x >= -200 && s.x <= width + 200 && s.y >= -100 && s.y <= height + 100;
+          box.style.display = onScreen ? 'block' : 'none';
+          box.style.transform = `translate(-50%, -100%) translate(${s.x}px, ${s.y - 16}px)`;
+        } else {
+          box.style.display = 'none';
+        }
+      }
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, []);
+  }, [width, height]);
 
   // --- differential rotation driver -----------------------------------------
   useEffect(() => {
@@ -1284,33 +1375,39 @@ function StarMapInner({
   );
 
   return (
-    <ForceGraph3D
-      ref={fgRef}
-      width={width}
-      height={height}
-      graphData={graphData}
-      backgroundColor="#04050c"
-      controlType="orbit"
-      showNavInfo={false}
-      warmupTicks={0}
-      cooldownTicks={30}
-      onEngineStop={handleEngineStop}
-      d3VelocityDecay={0.35}
-      nodeThreeObject={nodeThreeObject}
-      nodeLabel={nodeLabel}
-      onNodeClick={onNodeClick}
-      onNodeHover={handleNodeHover}
-      linkColor={linkColor}
-      linkWidth={0}
-      linkVisibility={linkVisibility}
-      linkOpacity={1}
-      linkDirectionalParticles={linkParticles}
-      linkDirectionalParticleWidth={1.4}
-      linkDirectionalParticleSpeed={0.006}
-      onLinkClick={onLinkClick}
-      onBackgroundClick={onBackgroundClick}
-      enableNodeDrag={false}
-    />
+    <div style={{ position: 'relative', width, height }}>
+      <ForceGraph3D
+        ref={fgRef}
+        width={width}
+        height={height}
+        graphData={graphData}
+        backgroundColor="#04050c"
+        controlType="orbit"
+        showNavInfo={false}
+        warmupTicks={0}
+        cooldownTicks={30}
+        onEngineStop={handleEngineStop}
+        d3VelocityDecay={0.35}
+        nodeThreeObject={nodeThreeObject}
+        nodeLabel={nodeLabel}
+        onNodeClick={onNodeClick}
+        onNodeHover={handleNodeHover}
+        linkColor={linkColor}
+        linkWidth={0}
+        linkVisibility={linkVisibility}
+        linkOpacity={1}
+        linkDirectionalParticles={linkParticles}
+        linkDirectionalParticleWidth={1.4}
+        linkDirectionalParticleSpeed={0.006}
+        onLinkClick={onLinkClick}
+        onBackgroundClick={onBackgroundClick}
+        enableNodeDrag={false}
+      />
+      <div ref={labelBoxRef} className="sm-selected-label" style={{ display: 'none' }}>
+        <span ref={labelNameRef} className="sm-name" />
+        <span ref={labelSubRef} className="sm-sub" />
+      </div>
+    </div>
   );
 }
 

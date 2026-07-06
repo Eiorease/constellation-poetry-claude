@@ -55,16 +55,36 @@ function nodeRadius(n: PoetNode): number {
   return Math.min(1.1 + Math.cbrt(n.poemCount) * 0.2, 3.2);
 }
 
+/**
+ * Fame tier for the selection burst, 0 (most famous) → 4:
+ * curated poets rank by surviving poem count; generated demo poets are tier 4.
+ * Colors run gold → purple → blue → cyan → white, with descending burst
+ * size and brightness.
+ */
+function fameTier(n: PoetNode): number {
+  if (n.generated) return 4;
+  if (n.poemCount >= 1000) return 0;
+  if (n.poemCount >= 400) return 1;
+  if (n.poemCount >= 100) return 2;
+  return 3;
+}
+const FAME_COLORS = ['#ffd257', '#b57bee', '#6b9fff', '#62d9ce', '#ffffff'];
+const FAME_BURST_SCALE = [100, 76, 58, 44, 34];
+const FAME_BURST_OPACITY = [0.95, 0.8, 0.68, 0.58, 0.48];
+
 /** Soft radial glow texture shared by every halo sprite. */
 function makeHaloTexture(): THREE.Texture {
   const size = 128;
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext('2d')!;
+  // gentle falloff with a long soft tail so glows melt into the background
   const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  g.addColorStop(0, 'rgba(255,255,255,0.85)');
-  g.addColorStop(0.25, 'rgba(255,255,255,0.28)');
-  g.addColorStop(0.6, 'rgba(255,255,255,0.06)');
+  g.addColorStop(0, 'rgba(255,255,255,0.8)');
+  g.addColorStop(0.2, 'rgba(255,255,255,0.34)');
+  g.addColorStop(0.45, 'rgba(255,255,255,0.12)');
+  g.addColorStop(0.7, 'rgba(255,255,255,0.04)');
+  g.addColorStop(0.9, 'rgba(255,255,255,0.012)');
   g.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, size, size);
@@ -302,6 +322,39 @@ function StarMapInner({
     rotationRef.current.lastInteract = performance.now();
     rotationRef.current.speed = 0; // pause immediately
   }, []);
+
+  // Shared "burst" attached to the selected star: diffraction rays + a soft
+  // glow, tinted and sized by the poet's fame tier.
+  const burstRef = useRef<{
+    group: THREE.Group;
+    rays: THREE.SpriteMaterial;
+    raysB: THREE.SpriteMaterial;
+    glow: THREE.SpriteMaterial;
+    raySprite: THREE.Sprite;
+    raySpriteB: THREE.Sprite;
+    glowSprite: THREE.Sprite;
+  } | null>(null);
+  const getBurst = useCallback(() => {
+    if (burstRef.current) return burstRef.current;
+    const group = new THREE.Group();
+    const mkMat = (map: THREE.Texture) =>
+      new THREE.SpriteMaterial({
+        map,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+    const rays = mkMat(spikeTexture);
+    const raysB = mkMat(spikeTexture);
+    raysB.rotation = Math.PI / 4; // second cross at 45° → 8-point star
+    const glow = mkMat(haloTexture);
+    const raySprite = new THREE.Sprite(rays);
+    const raySpriteB = new THREE.Sprite(raysB);
+    const glowSprite = new THREE.Sprite(glow);
+    group.add(glowSprite, raySprite, raySpriteB);
+    burstRef.current = { group, rays, raysB, glow, raySprite, raySpriteB, glowSprite };
+    return burstRef.current;
+  }, [spikeTexture, haloTexture]);
   const groupColor = useMemo(() => {
     const m = new Map<number, string>();
     groups.forEach((g) => m.set(g.id, g.color));
@@ -411,21 +464,21 @@ function StarMapInner({
 
     // Soft palette-tinted glow patches drifting far behind the galaxy.
     const glowTints = ['#f0bf85', '#7db8e8', '#c6ecff', '#454f86', '#e79ac4', '#f0bf85'];
-    for (let i = 0; i < 7; i++) {
-      const r = 950 + Math.random() * 700;
+    for (let i = 0; i < 16; i++) {
+      const r = 850 + Math.random() * 950;
       const theta = Math.random() * Math.PI * 2;
       const phi = Math.acos(2 * Math.random() - 1);
       const mat = new THREE.SpriteMaterial({
         map: nebulaTexture,
         color: glowTints[i % glowTints.length],
         transparent: true,
-        opacity: 0.035 + Math.random() * 0.03,
+        opacity: 0.03 + Math.random() * 0.035,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
         rotation: Math.random() * Math.PI * 2,
       });
       const glow = new THREE.Sprite(mat);
-      const scale = 480 + Math.random() * 470;
+      const scale = 550 + Math.random() * 750;
       glow.scale.set(scale, scale, 1);
       glow.position.set(
         r * Math.sin(phi) * Math.cos(theta),
@@ -515,12 +568,12 @@ function StarMapInner({
         map: haloTexture,
         color: color.clone(),
         transparent: true,
-        opacity: 0.1,
+        opacity: 0.12,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
       });
       const halo = new THREE.Sprite(haloMat);
-      halo.scale.set(r * 5.5, r * 5.5, 1);
+      halo.scale.set(r * 7, r * 7, 1);
       g.add(halo);
 
       const label = new SpriteText(node.name, 3.6, '#dde0ee');
@@ -574,6 +627,9 @@ function StarMapInner({
     // dim it while a filter highlights part of the sky
     if (nebulaGroupRef.current) nebulaGroupRef.current.visible = !hasSelection;
     applyDressingDim(filterActive ? 0.35 : 1);
+    // detach the fame burst; re-attached below if a star is selected
+    const burst = getBurst();
+    burst.group.removeFromParent();
     for (const [id, v] of visualsRef.current) {
       const isLit = highlightNodeIds.has(id);
       const isSelected = id === selectedNodeId;
@@ -595,10 +651,26 @@ function StarMapInner({
           v.label.visible = false;
         }
       } else if (isSelected) {
-        v.sphereMat.color.copy(v.baseColor).lerp(WHITE, 0.55);
+        // dazzling burst, tinted and sized by the poet's fame tier:
+        // gold → purple → blue → cyan → white, big/bright → small/dim
+        const tier = fameTier(v.node);
+        const tierColor = new THREE.Color(FAME_COLORS[tier]);
+        const scale = FAME_BURST_SCALE[tier];
+        const op = FAME_BURST_OPACITY[tier];
+        burst.rays.color.copy(tierColor);
+        burst.raysB.color.copy(tierColor);
+        burst.glow.color.copy(tierColor);
+        burst.rays.opacity = op;
+        burst.raysB.opacity = op * 0.55;
+        burst.glow.opacity = op * 0.5;
+        burst.raySprite.scale.set(scale, scale, 1);
+        burst.raySpriteB.scale.set(scale * 0.68, scale * 0.68, 1);
+        burst.glowSprite.scale.set(scale * 0.55, scale * 0.55, 1);
+        v.obj.add(burst.group);
+        v.sphereMat.color.copy(tierColor).lerp(WHITE, 0.4);
         v.sphereMat.opacity = 1;
-        v.haloMat.color.copy(v.baseColor).lerp(WHITE, 0.3);
-        v.haloMat.opacity = 0.3;
+        v.haloMat.color.copy(tierColor);
+        v.haloMat.opacity = 0.55;
         v.label.visible = true;
         v.label.color = '#ffffff';
       } else if (isLit) {
@@ -615,7 +687,7 @@ function StarMapInner({
         v.label.visible = false;
       }
     }
-  }, [highlightNodeIds, selectedNodeId, graphData, filterNodeIds, filterTypes, applyDressingDim]);
+  }, [highlightNodeIds, selectedNodeId, graphData, filterNodeIds, filterTypes, applyDressingDim, getBurst]);
 
   // Filter changes pause the rotation briefly and re-align link geometry
   // (type-filtered links become visible at the current rotated positions).
@@ -782,8 +854,8 @@ function StarMapInner({
       Math.min(RING_COUNT - 1, Math.floor(Math.hypot(x - gx, z - gz) / ringWidth));
     for (let i = 0; i < RING_COUNT; i++) {
       const rMid = (i + 0.5) * ringWidth;
-      // 50% faster: inner ring ≈ 9 min/rev, outer ring ≈ 15 min/rev
-      const omega = ((Math.PI * 2) / 493) * (1 / (1 + rMid / 620));
+      // inner ring ≈ 6 min/rev, outer ring ≈ 10 min/rev
+      const omega = ((Math.PI * 2) / 329) * (1 / (1 + rMid / 620));
       const pivot = new THREE.Group();
       pivot.position.set(gx, gy, gz);
       group.add(pivot);

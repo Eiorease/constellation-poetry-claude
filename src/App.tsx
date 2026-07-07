@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DetailPanel } from './components/DetailPanel';
+import { DynastyBar } from './components/DynastyBar';
 import { FilterBar, type Filters } from './components/FilterBar';
 import { Legend } from './components/Legend';
 import { LinkPanel } from './components/LinkPanel';
@@ -211,8 +212,13 @@ export default function App() {
         </div>
       </header>
 
+      {/* Dynasty quick-select (top centre, scrollable on small screens) */}
+      <div className="pointer-events-none absolute inset-x-0 top-16 z-10 flex justify-center px-3 sm:top-20">
+        <DynastyBar allDynasties={allDynasties} filters={filters} onChange={setFilters} />
+      </div>
+
       {/* Filters (top-left, below header on mobile) */}
-      <div className="pointer-events-none absolute left-4 top-32 z-10 sm:left-6 sm:top-24">
+      <div className="pointer-events-none absolute left-4 top-32 z-10 sm:left-6 sm:top-32">
         <FilterBar
           allDynasties={allDynasties}
           allTypes={allTypes}

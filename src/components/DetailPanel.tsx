@@ -1,8 +1,8 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { usePoetPoems, type Poem } from '../hooks/usePoems';
 import {
   endpointId,
   RELATION_COLORS,
-  type Evidence,
   type GroupInfo,
   type PoemLink,
   type PoetNode,
@@ -42,19 +42,15 @@ export function DetailPanel({
     return rows;
   }, [links, node.id, nodeById]);
 
-  const representativePoems = useMemo(() => {
-    const seen = new Set<string>();
-    const poems: Evidence[] = [];
-    for (const { link } of connections) {
-      for (const ev of link.evidence) {
-        if (ev.author === node.name && !seen.has(ev.title)) {
-          seen.add(ev.title);
-          poems.push(ev);
-        }
-      }
-    }
-    return poems.slice(0, 5);
-  }, [connections, node.name]);
+  // real works pulled from the chinese-poetry corpus (public/poems.json)
+  const poems = usePoetPoems(node.name);
+  const [showAll, setShowAll] = useState(false);
+  const [openPoem, setOpenPoem] = useState<Poem | null>(null);
+  useEffect(() => {
+    setShowAll(false);
+    setOpenPoem(null);
+  }, [node.id]);
+  const shownPoems = showAll ? poems : poems.slice(0, 5);
 
   return (
     <aside
@@ -112,19 +108,49 @@ export function DetailPanel({
           )}
         </dl>
 
-        {representativePoems.length > 0 && (
+        {poems.length > 0 && (
           <section>
-            <h3 className="mb-2 text-xs tracking-[0.3em] text-ink-400">代表诗作</h3>
-            <ul className="space-y-2.5">
-              {representativePoems.map((p) => (
-                <li key={p.title} className="text-sm leading-relaxed">
-                  <span className="text-moon">《{p.title}》</span>
-                  {p.content && !p.content.startsWith('(') && (
-                    <p className="mt-0.5 text-[13px] leading-6 text-ink-200">{p.content}</p>
-                  )}
-                </li>
-              ))}
+            <h3 className="mb-2 flex items-baseline justify-between text-xs tracking-[0.3em] text-ink-400">
+              <span>{showAll ? '作品全集' : '代表诗作'}</span>
+              <span className="text-[10px] text-ink-400/70">共 {poems.length} 首</span>
+            </h3>
+            <ul className="space-y-1">
+              {shownPoems.map((p, i) => {
+                const isOpen = openPoem?.title === p.title;
+                return (
+                  <li key={`${p.title}-${i}`} className="rounded-lg bg-ink-800/40">
+                    <button
+                      type="button"
+                      onClick={() => setOpenPoem(isOpen ? null : p)}
+                      className="flex w-full items-baseline justify-between gap-2 px-3 py-2 text-left"
+                    >
+                      <span className="text-sm tracking-wider text-moon">《{p.title}》</span>
+                      <span className="shrink-0 text-[11px] text-ink-400">
+                        {isOpen ? '收起' : '展开'}
+                      </span>
+                    </button>
+                    {isOpen && (
+                      <div className="border-l-2 border-gold/30 px-3 pb-3 pl-3">
+                        {p.lines.map((line, li) => (
+                          <p key={li} className="text-[13px] leading-7 text-ink-100">
+                            {line}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
+            {poems.length > 5 && (
+              <button
+                type="button"
+                onClick={() => setShowAll((s) => !s)}
+                className="mt-2.5 w-full rounded-full border border-gold/30 py-1.5 text-xs tracking-widest text-gold/90 hover:bg-gold/10"
+              >
+                {showAll ? '收起全集' : `查看全部 ${poems.length} 首作品 →`}
+              </button>
+            )}
           </section>
         )}
 

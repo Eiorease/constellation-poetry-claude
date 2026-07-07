@@ -400,6 +400,7 @@ interface RotationState {
 }
 
 const RING_COUNT = 6;
+const PARTICLE_SCALE = 0.85; // global −15% particle count (#2)
 
 /** center-weighted random in ~[-1.5, 1.5] */
 const gauss3 = () => Math.random() + Math.random() + Math.random() - 1.5;
@@ -534,12 +535,13 @@ function StarMapInner({
 
     // Beams as a shader so each line can appear on its own schedule (aAppear,
     // ms) and carry its own opacity boost (aBoost) — driven by uElapsed.
-    const beamMaterial = () =>
+    const beamMaterial = (appearDur: number) =>
       new THREE.ShaderMaterial({
         uniforms: {
           uElapsed: { value: 0 },
           uColor: { value: new THREE.Color('#ffffff') },
           uOpacity: { value: 1 },
+          uAppearDur: { value: appearDur }, // per-beam fade-in duration (ms)
         },
         transparent: true,
         depthWrite: false,
@@ -548,10 +550,10 @@ function StarMapInner({
           attribute float aFade;    // 1 at bright end → 0 at faint tip
           attribute float aAppear;  // ms after selection this beam appears
           attribute float aBoost;   // per-beam opacity multiplier (1.15–1.30)
-          uniform float uElapsed;
+          uniform float uElapsed, uAppearDur;
           varying float vA;
           void main() {
-            float show = smoothstep(aAppear, aAppear + 260.0, uElapsed);
+            float show = smoothstep(aAppear, aAppear + uAppearDur, uElapsed);
             vA = aFade * aBoost * show;
             gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
           }`,
@@ -567,6 +569,7 @@ function StarMapInner({
       count: number,
       appearMin: number,
       appearMax: number,
+      appearDur: number,
       place: (i: number) => { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number },
     ) => {
       const pos = new Float32Array(count * 2 * 3);
@@ -588,21 +591,21 @@ function StarMapInner({
       geo.setAttribute('aFade', new THREE.BufferAttribute(fade, 1));
       geo.setAttribute('aAppear', new THREE.BufferAttribute(appear, 1));
       geo.setAttribute('aBoost', new THREE.BufferAttribute(boost, 1));
-      const mat = beamMaterial();
+      const mat = beamMaterial(appearDur);
       return { mat, seg: new THREE.LineSegments(geo, mat) };
     };
 
-    // Horizontal rays radiate flat from the star body, each tilted a random
-    // ±10° off the galactic plane (#12); they appear over 1–3 s (#13).
-    const H_COUNT = 294; // 420 −30% (#5)
-    const V_COUNT = 224; // 320 −30% (#5)
+    // Horizontal rays radiate flat from the star body, each tilted ±7° off the
+    // plane. They emerge gradually over 1–5 s after the click (#7).
+    const H_COUNT = 206; // 294 −30% (#7)
+    const V_COUNT = 134; // 224 −40% (#8)
     const dirs: { a: number; len: number }[] = [];
     for (let i = 0; i < H_COUNT; i++) {
       dirs.push({ a: Math.random() * Math.PI * 2, len: 0.5 + Math.random() * 0.5 });
     }
-    const h = mkBeams(H_COUNT, 0, 2200, (i) => {
+    const h = mkBeams(H_COUNT, 1000, 5000, 260, (i) => {
       const { a, len } = dirs[i];
-      const tilt = ((Math.random() * 2 - 1) * 7 * Math.PI) / 180; // ±7° (−30%)
+      const tilt = ((Math.random() * 2 - 1) * 7 * Math.PI) / 180; // ±7°
       return {
         x0: 0, y0: 0, z0: 0,
         x1: Math.cos(a) * len,
@@ -611,13 +614,14 @@ function StarMapInner({
       };
     });
     // Vertical hairs sprout from random points ALONG the horizontal rays and
-    // rise perpendicular; they appear 1–3 s after the horizontals (#7, #13).
-    const v = mkBeams(V_COUNT, 2500, 5000, () => {
+    // shoot far past the screen edge (#3). Fewer, more widely spaced (#8),
+    // appearing 2–5 s after the horizontals finish, with a 30% slower fade-in.
+    const v = mkBeams(V_COUNT, 7000, 10000, 340, () => {
       const ray = dirs[Math.floor(Math.random() * dirs.length)];
-      const at = 0.2 + Math.random() * 0.7;
+      // wider, coarser placement along the ray → ~50% larger spacing (#8)
+      const at = 0.15 + Math.floor(Math.random() * 6) * 0.15;
       const bx = Math.cos(ray.a) * ray.len * at;
       const bz = Math.sin(ray.a) * ray.len * at;
-      // long vertical hairs that shoot right past the screen edge (#3)
       const vlen = (3.5 + Math.random() * 3) * (Math.random() < 0.5 ? -1 : 1);
       return {
         x0: bx, y0: 0, z0: bz,
@@ -681,12 +685,12 @@ function StarMapInner({
     // Background kept faint: the people-stars ARE the nebula, so the sky
     // behind is near-black with sparse dim, twinkling pinpricks (breathing on,
     // no drift). Crisp at any zoom via the shared particle shader.
-    const far = makeStarField(Math.round(10800 * D.particleMul), 1500, 3400);
+    const far = makeStarField(Math.round(10800 * D.particleMul * PARTICLE_SCALE), 1500, 3400);
     const farMat = makeParticleMaterial({ baseOpacity: 0.42, sizeMul: 3, minPx: 0.7, maxPx: 2.4 * D.maxPxMul, breath: 1 });
     const farStars = new THREE.Points(makeParticleGeometry(far.positions, far.colors, 1), farMat);
     farStars.frustumCulled = false;
 
-    const near = makeStarField(Math.round(1080 * D.particleMul), 900, 2200);
+    const near = makeStarField(Math.round(1080 * D.particleMul * PARTICLE_SCALE), 900, 2200);
     const nearMat = makeParticleMaterial({ baseOpacity: 0.5, sizeMul: 8, minPx: 1, maxPx: 5 * D.maxPxMul, breath: 1 });
     const nearStars = new THREE.Points(makeParticleGeometry(near.positions, near.colors, 1), nearMat);
     nearStars.frustumCulled = false;
@@ -699,7 +703,7 @@ function StarMapInner({
     // Volumetric selection field: a big cloud of drifting, near-big/far-small
     // particles that fills the space only while a poet is selected.
     {
-      const n = Math.round(9000 * D.particleMul);
+      const n = Math.round(9000 * D.particleMul * PARTICLE_SCALE);
       const pos = new Float32Array(n * 3);
       const col = new Float32Array(n * 3);
       const c = new THREE.Color();
@@ -812,7 +816,53 @@ function StarMapInner({
     controls.addEventListener('start', onControlsActivity);
     const dom = fg.renderer().domElement;
     dom.addEventListener('pointerdown', onControlsActivity);
-    dom.addEventListener('wheel', onControlsActivity, { passive: true });
+
+    // Camera panning: move both the eye and the look-at target together so the
+    // whole nebula slides across the screen without rotating.
+    const panBy = (dxScreen: number, dyScreen: number) => {
+      const cam = fg.camera();
+      const dist = cam.position.distanceTo(controls.target) || 1;
+      const k = dist * 0.0016;
+      const right = new THREE.Vector3().setFromMatrixColumn(cam.matrix, 0);
+      const up = new THREE.Vector3().setFromMatrixColumn(cam.matrix, 1);
+      const pan = new THREE.Vector3()
+        .addScaledVector(right, -dxScreen * k)
+        .addScaledVector(up, dyScreen * k);
+      cam.position.add(pan);
+      controls.target.add(pan);
+      controls.update();
+      notifyInteraction();
+    };
+
+    // Trackpad: two-finger swipe pans (was zoom); pinch (ctrl+wheel) zooms.
+    controls.enableZoom = false; // we handle wheel ourselves
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      if (e.ctrlKey) {
+        // pinch-zoom → dolly the camera toward / away from the target
+        const cam = fg.camera();
+        const dir = new THREE.Vector3().subVectors(cam.position, controls.target);
+        dir.multiplyScalar(Math.exp(e.deltaY * 0.01));
+        cam.position.copy(controls.target).add(dir);
+        controls.update();
+        notifyInteraction();
+      } else {
+        panBy(e.deltaX, e.deltaY);
+      }
+    };
+    dom.addEventListener('wheel', onWheel, { passive: false });
+
+    // WASD nudges the nebula: W up, A left, S down, D right.
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      const S = 42;
+      if (e.key === 'w' || e.key === 'W') panBy(0, S);
+      else if (e.key === 's' || e.key === 'S') panBy(0, -S);
+      else if (e.key === 'a' || e.key === 'A') panBy(-S, 0);
+      else if (e.key === 'd' || e.key === 'D') panBy(S, 0);
+    };
+    window.addEventListener('keydown', onKey);
 
     // Start far out; we glide in with zoomToFit once the layout settles.
     fg.cameraPosition({ x: 0, y: 0, z: DEFAULT_CAMERA_DISTANCE * 2.4 });
@@ -835,7 +885,8 @@ function StarMapInner({
       document.removeEventListener('visibilitychange', onVisible);
       controls.removeEventListener('start', onControlsActivity);
       dom.removeEventListener('pointerdown', onControlsActivity);
-      dom.removeEventListener('wheel', onControlsActivity);
+      dom.removeEventListener('wheel', onWheel);
+      window.removeEventListener('keydown', onKey);
       bloomRef.current = null;
       fg.postProcessingComposer().removePass(bloom);
       scene.background = null;
@@ -1214,11 +1265,14 @@ function StarMapInner({
     const tanHalfV = Math.tan(((camera.fov / 2) * Math.PI) / 180);
     const tanHalfH = tanHalfV * (camera.aspect || 1);
     const fitDist = (discRadius / (0.8 * tanHalfH)) * deviceRef.current.viewScale;
-    // 20° tilt above the disc plane — a low, cinematic angle (#4), disc centred.
+    // 20° tilt above the disc plane — a low, cinematic angle (#4). At this low
+    // angle the near half of the disc fills the lower screen, so we pan the
+    // whole view down a touch (both eye & target) to sit it vertically centred.
     const el = (20 * Math.PI) / 180;
+    const lift = discRadius * 0.16;
     fg.cameraPosition(
-      { x: cx, y: cy + fitDist * Math.sin(el), z: cz + fitDist * Math.cos(el) },
-      { x: cx, y: cy, z: cz },
+      { x: cx, y: cy + fitDist * Math.sin(el) - lift, z: cz + fitDist * Math.cos(el) },
+      { x: cx, y: cy - lift, z: cz },
       duration,
     );
   }, []);
@@ -1341,7 +1395,7 @@ function StarMapInner({
       // so the disc is ~5× thicker at the core than the rim (req 11).
       for (let li = 0; li < DUST_LAYERS.length; li++) {
         const layer = DUST_LAYERS[li];
-        const grains = Math.max(1, Math.round(layer.grains * D.particleMul));
+        const grains = Math.max(1, Math.round(layer.grains * D.particleMul * PARTICLE_SCALE));
         for (const seed of members) {
           const rSeed = Math.hypot((seed.x ?? 0) - gx, (seed.z ?? 0) - gz);
           const taper = 0.067 + 0.933 * Math.exp(-rSeed / 150); // ~15× core:rim
@@ -1425,7 +1479,7 @@ function StarMapInner({
     // --- energy tide: cyan/ice-blue particle stream flowing from the upper
     // left toward the galactic core (static, independent of the rotation)
     {
-      const streamCount = Math.round(54000 * D.particleMul);
+      const streamCount = Math.round(54000 * D.particleMul * PARTICLE_SCALE);
       const sPos = new Float32Array(streamCount * 3);
       const sCol = new Float32Array(streamCount * 3);
       const P0 = new THREE.Vector3(-640, 170, -400);
@@ -1463,8 +1517,8 @@ function StarMapInner({
     // same-palette motes filling the whole volume, so zoomed-in views float
     // inside a sea of particles instead of empty black space
     {
-      const haloCount = Math.round(15600 * D.particleMul);
-      const ambientCount = Math.round(31200 * D.particleMul);
+      const haloCount = Math.round(15600 * D.particleMul * PARTICLE_SCALE);
+      const ambientCount = Math.round(31200 * D.particleMul * PARTICLE_SCALE);
       const total = haloCount + ambientCount;
       const aPos = new Float32Array(total * 3);
       const aCol = new Float32Array(total * 3);
@@ -1506,7 +1560,7 @@ function StarMapInner({
 
     // --- central bulge: a dense knot of warm stars filling the core --------
     {
-      const bulgeCount = Math.round(3000 * D.particleMul);
+      const bulgeCount = Math.round(3000 * D.particleMul * PARTICLE_SCALE);
       const bPos = new Float32Array(bulgeCount * 3);
       const bCol = new Float32Array(bulgeCount * 3);
       for (let i = 0; i < bulgeCount; i++) {
@@ -1641,8 +1695,9 @@ function StarMapInner({
       if (burst && burst.group.parent && burst.group.visible) {
         const elapsed = now - burstStartRef.current;
         const base = burstBaseRef.current;
+        // hold until 15 s (vertical hairs finish appearing ~10 s) then fade
         const fade =
-          elapsed <= 10000 ? 1 : Math.max(0, 1 - (elapsed - 10000) / 1500);
+          elapsed <= 15000 ? 1 : Math.max(0, 1 - (elapsed - 15000) / 2000);
         burst.beamMatH.uniforms.uElapsed.value = elapsed;
         burst.beamMatV.uniforms.uElapsed.value = elapsed;
         burst.beamMatH.uniforms.uOpacity.value = base.h * fade;

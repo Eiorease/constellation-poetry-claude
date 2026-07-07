@@ -483,20 +483,14 @@ try {
   console.warn('real-poets.json missing — run: node scripts/fetch-poets.mjs');
 }
 
-// which spiral arms each dynasty's real poets spread across (visual grouping)
-const DYNASTY_GROUPS = {
-  唐: [1, 2, 3, 4, 5, 6, 7, 12],
-  宋: [8, 9, 13],
-  元: [15],
-  先秦: [10],
-};
-const groupCursor = {};
-function groupForDynasty(dyn) {
-  const cands = DYNASTY_GROUPS[dyn];
-  if (!cands) return 10; // fallback arm
-  const k = dyn;
-  groupCursor[k] = (groupCursor[k] ?? 0) + 1;
-  return cands[groupCursor[k] % cands.length];
+// Spread real poets evenly across ALL arms (round-robin) so every spiral arm
+// holds roughly the same number of stars — no arm ends up much thicker than
+// another (#1). Arms are spatial clusters, not strict schools.
+let armCursor = 0;
+function nextArm() {
+  const g = armCursor % GROUPS.length;
+  armCursor++;
+  return g;
 }
 
 const nodes = [];
@@ -534,7 +528,7 @@ for (const [name, cy, dyn, pc, group, hub] of CURATED_POETS) {
 for (const p of REAL_POETS) {
   if (nodes.length >= MAX_NODES) break;
   if (usedNames.has(p.name)) continue;
-  addNode(p.name, '', p.dynasty, p.poemCount, groupForDynasty(p.dynasty), false, false);
+  addNode(p.name, '', p.dynasty, p.poemCount, nextArm(), false, false);
 }
 
 // --- spiral-arm position pass ----------------------------------------------

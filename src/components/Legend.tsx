@@ -4,7 +4,7 @@ import { RELATION_COLORS, RELATION_LABELS, type RelationType } from '../types';
 const TYPES = Object.keys(RELATION_COLORS) as RelationType[];
 
 export function Legend() {
-  const [open, setOpen] = useState(typeof window !== 'undefined' && window.innerWidth >= 768);
+  const [open, setOpen] = useState(false); // collapsed by default
 
   return (
     <div className="panel pointer-events-auto rounded-2xl px-4 py-3">

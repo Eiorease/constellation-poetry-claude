@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   endpointId,
   RELATION_COLORS,
@@ -19,6 +19,8 @@ interface Props {
 export function ListFallback({ data, onBackTo3D }: Props) {
   const [query, setQuery] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [showTop, setShowTop] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const nodeById = useMemo(
     () => new Map(data.nodes.map((n) => [n.id, n])),
@@ -51,23 +53,29 @@ export function ListFallback({ data, onBackTo3D }: Props) {
   }, [data.nodes, query]);
 
   return (
-    <div className="thin-scroll h-full overflow-y-auto bg-ink-950 px-4 py-8 sm:px-8">
-      <div className="mx-auto max-w-3xl">
-        <header className="mb-8 text-center">
-          <h1 className="text-3xl tracking-[0.4em] text-moon">诗人星图</h1>
-          <p className="mt-3 text-sm text-ink-400">
-            中国古典诗人交游列表(2D 无障碍模式)
-          </p>
-          {onBackTo3D && (
-            <button
-              type="button"
-              onClick={onBackTo3D}
-              className="mt-4 rounded-full border border-gold/40 px-4 py-1.5 text-xs tracking-widest text-gold hover:bg-gold/10"
-            >
-              返回三维星图
-            </button>
-          )}
-        </header>
+    <div
+      ref={scrollRef}
+      onScroll={(e) => setShowTop(e.currentTarget.scrollTop > 400)}
+      className="thin-scroll relative h-full overflow-y-auto bg-ink-950"
+    >
+      {/* sticky top bar: title + back button always visible (#6) */}
+      <div className="sticky top-0 z-20 flex items-center justify-between gap-3 border-b border-ink-200/10 bg-ink-950/90 px-4 py-3 backdrop-blur sm:px-8">
+        <h1 className="text-lg tracking-[0.35em] text-moon sm:text-xl">诗人星图</h1>
+        {onBackTo3D && (
+          <button
+            type="button"
+            onClick={onBackTo3D}
+            className="shrink-0 rounded-full border border-gold/40 px-4 py-1.5 text-xs tracking-widest text-gold hover:bg-gold/10"
+          >
+            返回三维星图
+          </button>
+        )}
+      </div>
+
+      <div className="mx-auto max-w-3xl px-4 py-8 sm:px-8">
+        <p className="mb-6 text-center text-sm text-ink-400">
+          中国古典诗人交游列表(2D 无障碍模式)
+        </p>
 
         <input
           type="search"
@@ -139,6 +147,18 @@ export function ListFallback({ data, onBackTo3D }: Props) {
           </section>
         ))}
       </div>
+
+      {/* quick scroll-to-top (bottom-right) */}
+      {showTop && (
+        <button
+          type="button"
+          onClick={() => scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+          aria-label="返回顶部"
+          className="panel fixed bottom-6 right-6 z-20 rounded-full px-4 py-2.5 text-sm tracking-widest text-ink-200 hover:text-gold"
+        >
+          ↑ 顶部
+        </button>
+      )}
     </div>
   );
 }

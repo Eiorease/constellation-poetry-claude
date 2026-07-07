@@ -61,9 +61,7 @@ function Chip({
 }
 
 export function FilterBar({ allDynasties, allTypes, groups, filters, onChange }: Props) {
-  const [collapsed, setCollapsed] = useState(
-    typeof window !== 'undefined' && window.innerWidth < 768,
-  );
+  const [collapsed, setCollapsed] = useState(true); // collapsed by default
 
   const activeCount = filters.dynasties.size + filters.types.size + filters.groups.size;
 

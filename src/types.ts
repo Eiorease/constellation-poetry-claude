@@ -15,6 +15,10 @@ export interface PoetNode {
   poemCount: number;
   group: number;
   generated?: boolean;
+  /** unique catalogue number, e.g. "SH-0037" */
+  code?: string;
+  /** stable 3D coordinate relative to the galactic centre */
+  coord?: { x: number; y: number; z: number };
   x: number;
   y: number;
   z: number;

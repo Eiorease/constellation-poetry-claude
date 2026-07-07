@@ -120,6 +120,8 @@ export default function App() {
   const clearSelection = useCallback(() => {
     setSelectedNode(null);
     setSelectedLink(null);
+    // returning from a selection restores the initial framing (req 2)
+    apiRef.current?.resetCamera();
   }, []);
 
   const handleSearchSelect = useCallback(

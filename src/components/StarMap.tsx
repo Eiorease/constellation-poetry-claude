@@ -371,9 +371,8 @@ function makeParticleGeometry(
 interface NodeVisual {
   node: PoetNode;
   obj: THREE.Group;
-  sphereMat: THREE.MeshBasicMaterial;
   bodyMat: THREE.SpriteMaterial;
-  haloMat: THREE.SpriteMaterial;
+  haloMat: THREE.SpriteMaterial | null; // named poets only
   label: SpriteText;
   baseColor: THREE.Color;
   /** breathing phase & angular speed (period 1–2 s) */
@@ -405,6 +404,24 @@ const RING_COUNT = 6;
 
 /** center-weighted random in ~[-1.5, 1.5] */
 const gauss3 = () => Math.random() + Math.random() + Math.random() - 1.5;
+
+/** reused scratch vector for comet interpolation (avoids per-frame allocation) */
+const comet_tmp = new THREE.Vector3();
+
+interface DeviceTier {
+  particleMul: number; // scales all particle counts (perf + clarity)
+  maxPxMul: number; // scales the point-size pixel clamp
+  bloomMul: number; // scales bloom strength
+  viewScale: number; // scales the default camera distance
+}
+/** Per-device visual tuning by screen width — phones get far fewer, smaller
+ *  particles and gentler bloom so stars stay crisp instead of blooming into
+ *  big light blobs (req 14). */
+function computeDevice(w: number): DeviceTier {
+  if (w < 600) return { particleMul: 0.26, maxPxMul: 0.55, bloomMul: 0.5, viewScale: 1.08 };
+  if (w < 1024) return { particleMul: 0.55, maxPxMul: 0.78, bloomMul: 0.8, viewScale: 1.02 };
+  return { particleMul: 1, maxPxMul: 1, bloomMul: 1, viewScale: 1 };
+}
 
 const ROTATION_IDLE_DELAY = 2000; // ms of stillness before resuming
 const ROTATION_RAMP_SECONDS = 2.5; // gradual spin-up time
@@ -470,7 +487,22 @@ function StarMapInner({
   // volumetric particle field revealed only while a poet is selected
   const selectionFieldRef = useRef<THREE.Points | null>(null);
   const burstStartRef = useRef(0);
+  const deviceRef = useRef<DeviceTier>(computeDevice(width));
   const burstBaseRef = useRef({ h: 0, glow: 0 });
+  // custom comet photons (a small head + a fading trail) travelling along the
+  // highlighted relationship lines — one per link (req 3)
+  const cometGroupRef = useRef<THREE.Group | null>(null);
+  const cometsRef = useRef<
+    Array<{
+      a: THREE.Vector3;
+      b: THREE.Vector3;
+      t: number;
+      speed: number;
+      geo: THREE.BufferGeometry;
+      posAttr: THREE.BufferAttribute;
+      head: THREE.Sprite;
+    }>
+  >([]);
   // current highlight set, read by the per-frame breathing loop
   const highlightIdsRef = useRef<ReadonlySet<string>>(new Set());
 
@@ -485,9 +517,9 @@ function StarMapInner({
     group: THREE.Group;
     glow: THREE.SpriteMaterial;
     glowSprite: THREE.Sprite;
-    beamMatH: THREE.LineBasicMaterial;
+    beamMatH: THREE.ShaderMaterial;
     beamsH: THREE.LineSegments;
-    beamMatV: THREE.LineBasicMaterial;
+    beamMatV: THREE.ShaderMaterial;
     beamsV: THREE.LineSegments;
   } | null>(null);
   const getBurst = useCallback(() => {
@@ -501,64 +533,97 @@ function StarMapInner({
     });
     const glowSprite = new THREE.Sprite(glow);
 
-    // Extremely fine light beams. The H set radiates flat from the star body
-    // (in-plane, y≈0). The V set does NOT come from the body — each vertical
-    // hair sprouts from a random point ALONG one of the horizontal rays and
-    // rises perpendicular to the plane. Each segment fades bright→tip.
-    const mkLine = (pos: Float32Array, col: Float32Array) => {
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-      geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-      const mat = new THREE.LineBasicMaterial({
-        vertexColors: true,
+    // Beams as a shader so each line can appear on its own schedule (aAppear,
+    // ms) and carry its own opacity boost (aBoost) — driven by uElapsed.
+    const beamMaterial = () =>
+      new THREE.ShaderMaterial({
+        uniforms: {
+          uElapsed: { value: 0 },
+          uColor: { value: new THREE.Color('#ffffff') },
+          uOpacity: { value: 1 },
+        },
         transparent: true,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
+        vertexShader: `
+          attribute float aFade;    // 1 at bright end → 0 at faint tip
+          attribute float aAppear;  // ms after selection this beam appears
+          attribute float aBoost;   // per-beam opacity multiplier (1.15–1.30)
+          uniform float uElapsed;
+          varying float vA;
+          void main() {
+            float show = smoothstep(aAppear, aAppear + 260.0, uElapsed);
+            vA = aFade * aBoost * show;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }`,
+        fragmentShader: `
+          precision mediump float;
+          uniform vec3 uColor;
+          uniform float uOpacity;
+          varying float vA;
+          void main() { gl_FragColor = vec4(uColor, vA * uOpacity); }`,
       });
+
+    const mkBeams = (
+      count: number,
+      appearMin: number,
+      appearMax: number,
+      place: (i: number) => { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number },
+    ) => {
+      const pos = new Float32Array(count * 2 * 3);
+      const fade = new Float32Array(count * 2);
+      const appear = new Float32Array(count * 2);
+      const boost = new Float32Array(count * 2);
+      for (let i = 0; i < count; i++) {
+        const p = place(i);
+        pos.set([p.x0, p.y0, p.z0, p.x1, p.y1, p.z1], i * 6);
+        fade[i * 2] = 1; // bright root
+        fade[i * 2 + 1] = 0; // faint tip
+        const ap = appearMin + Math.random() * (appearMax - appearMin);
+        appear[i * 2] = appear[i * 2 + 1] = ap;
+        const b = 1.15 + Math.random() * 0.15; // +15–30% (#13)
+        boost[i * 2] = boost[i * 2 + 1] = b;
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      geo.setAttribute('aFade', new THREE.BufferAttribute(fade, 1));
+      geo.setAttribute('aAppear', new THREE.BufferAttribute(appear, 1));
+      geo.setAttribute('aBoost', new THREE.BufferAttribute(boost, 1));
+      const mat = beamMaterial();
       return { mat, seg: new THREE.LineSegments(geo, mat) };
     };
 
-    const buildHorizontal = (count: number) => {
-      const pos = new Float32Array(count * 2 * 3);
-      const col = new Float32Array(count * 2 * 3);
-      const dirs: { a: number; len: number }[] = [];
-      for (let i = 0; i < count; i++) {
-        const a = Math.random() * Math.PI * 2;
-        const len = 0.5 + Math.random() * 0.5;
-        dirs.push({ a, len });
-        pos[i * 6 + 3] = Math.cos(a) * len;
-        pos[i * 6 + 4] = (Math.random() - 0.5) * 0.05 * len;
-        pos[i * 6 + 5] = Math.sin(a) * len;
-        col[i * 6] = col[i * 6 + 1] = col[i * 6 + 2] = 1; // bright at body
-      }
-      return { ...mkLine(pos, col), dirs };
-    };
-
-    const buildVerticalAlong = (
-      count: number,
-      dirs: { a: number; len: number }[],
-    ) => {
-      const pos = new Float32Array(count * 2 * 3);
-      const col = new Float32Array(count * 2 * 3);
-      for (let i = 0; i < count; i++) {
-        const ray = dirs[Math.floor(Math.random() * dirs.length)];
-        const at = 0.2 + Math.random() * 0.7; // random point along that ray
-        const bx = Math.cos(ray.a) * ray.len * at;
-        const bz = Math.sin(ray.a) * ray.len * at;
-        const vlen = (0.12 + Math.random() * 0.28) * (Math.random() < 0.5 ? -1 : 1);
-        pos[i * 6] = bx; // start on the horizontal ray (dim end fades down)
-        pos[i * 6 + 1] = 0;
-        pos[i * 6 + 2] = bz;
-        pos[i * 6 + 3] = bx + (Math.random() - 0.5) * 0.03;
-        pos[i * 6 + 4] = vlen; // rise/fall perpendicular to the plane
-        pos[i * 6 + 5] = bz + (Math.random() - 0.5) * 0.03;
-        // bright at the tip, fading back toward the horizontal ray
-        col[i * 6 + 3] = col[i * 6 + 4] = col[i * 6 + 5] = 1;
-      }
-      return mkLine(pos, col);
-    };
-    const h = buildHorizontal(420);
-    const v = buildVerticalAlong(320, h.dirs);
+    // Horizontal rays radiate flat from the star body, each tilted a random
+    // ±10° off the galactic plane (#12); they appear over 1–3 s (#13).
+    const dirs: { a: number; len: number }[] = [];
+    for (let i = 0; i < 420; i++) {
+      dirs.push({ a: Math.random() * Math.PI * 2, len: 0.5 + Math.random() * 0.5 });
+    }
+    const h = mkBeams(420, 0, 2200, (i) => {
+      const { a, len } = dirs[i];
+      const tilt = ((Math.random() * 2 - 1) * 10 * Math.PI) / 180; // ±10°
+      return {
+        x0: 0, y0: 0, z0: 0,
+        x1: Math.cos(a) * len,
+        y1: len * Math.tan(tilt),
+        z1: Math.sin(a) * len,
+      };
+    });
+    // Vertical hairs sprout from random points ALONG the horizontal rays and
+    // rise perpendicular; they appear 1–3 s after the horizontals (#7, #13).
+    const v = mkBeams(320, 2500, 5000, () => {
+      const ray = dirs[Math.floor(Math.random() * dirs.length)];
+      const at = 0.2 + Math.random() * 0.7;
+      const bx = Math.cos(ray.a) * ray.len * at;
+      const bz = Math.sin(ray.a) * ray.len * at;
+      const vlen = (0.12 + Math.random() * 0.28) * (Math.random() < 0.5 ? -1 : 1);
+      return {
+        x0: bx, y0: 0, z0: bz,
+        x1: bx + (Math.random() - 0.5) * 0.03,
+        y1: vlen,
+        z1: bz + (Math.random() - 0.5) * 0.03,
+      };
+    });
 
     group.add(h.seg, v.seg, glowSprite);
     burstRef.current = {
@@ -575,11 +640,6 @@ function StarMapInner({
   const groupColor = useMemo(() => {
     const m = new Map<number, string>();
     groups.forEach((g) => m.set(g.id, g.color));
-    return m;
-  }, [groups]);
-  const groupName = useMemo(() => {
-    const m = new Map<number, string>();
-    groups.forEach((g) => m.set(g.id, g.name));
     return m;
   }, [groups]);
 
@@ -614,17 +674,18 @@ function StarMapInner({
     const disposables: { dispose: () => void }[] = [backdrop];
     const sceneObjects: THREE.Object3D[] = [];
     sceneMatsRef.current = [];
+    const D = deviceRef.current;
 
     // Background kept faint: the people-stars ARE the nebula, so the sky
     // behind is near-black with sparse dim, twinkling pinpricks (breathing on,
     // no drift). Crisp at any zoom via the shared particle shader.
-    const far = makeStarField(10800, 1500, 3400);
-    const farMat = makeParticleMaterial({ baseOpacity: 0.42, sizeMul: 3, minPx: 0.7, maxPx: 2.4, breath: 1 });
+    const far = makeStarField(Math.round(10800 * D.particleMul), 1500, 3400);
+    const farMat = makeParticleMaterial({ baseOpacity: 0.42, sizeMul: 3, minPx: 0.7, maxPx: 2.4 * D.maxPxMul, breath: 1 });
     const farStars = new THREE.Points(makeParticleGeometry(far.positions, far.colors, 1), farMat);
     farStars.frustumCulled = false;
 
-    const near = makeStarField(1080, 900, 2200);
-    const nearMat = makeParticleMaterial({ baseOpacity: 0.5, sizeMul: 8, minPx: 1, maxPx: 5, breath: 1 });
+    const near = makeStarField(Math.round(1080 * D.particleMul), 900, 2200);
+    const nearMat = makeParticleMaterial({ baseOpacity: 0.5, sizeMul: 8, minPx: 1, maxPx: 5 * D.maxPxMul, breath: 1 });
     const nearStars = new THREE.Points(makeParticleGeometry(near.positions, near.colors, 1), nearMat);
     nearStars.frustumCulled = false;
 
@@ -636,7 +697,7 @@ function StarMapInner({
     // Volumetric selection field: a big cloud of drifting, near-big/far-small
     // particles that fills the space only while a poet is selected.
     {
-      const n = 9000;
+      const n = Math.round(9000 * D.particleMul);
       const pos = new Float32Array(n * 3);
       const col = new Float32Array(n * 3);
       const c = new THREE.Color();
@@ -654,7 +715,7 @@ function StarMapInner({
         col[i * 3 + 2] = c.b;
       }
       const selMat = makeParticleMaterial({
-        baseOpacity: 0.6, sizeMul: 6, minPx: 1, maxPx: 6, motion: 9, breath: 1,
+        baseOpacity: 0.6, sizeMul: 6, minPx: 1, maxPx: 6 * D.maxPxMul, motion: 9, breath: 1,
       });
       const selField = new THREE.Points(makeParticleGeometry(pos, col, 1.4), selMat);
       selField.frustumCulled = false;
@@ -724,6 +785,12 @@ function StarMapInner({
       disposables.push(mat);
     }
 
+    // Container for the moving comet photons on highlighted links.
+    const cometGroup = new THREE.Group();
+    scene.add(cometGroup);
+    sceneObjects.push(cometGroup);
+    cometGroupRef.current = cometGroup;
+
     // Container for per-community nebula clouds (rebuilt on engine stop).
     const nebulaGroup = new THREE.Group();
     nebulaGroup.renderOrder = -2;
@@ -764,6 +831,8 @@ function StarMapInner({
       fg.postProcessingComposer().removePass(bloom);
       scene.background = null;
       nebulaGroupRef.current = null;
+      cometGroupRef.current = null;
+      cometsRef.current = [];
       selectionFieldRef.current = null;
       sceneMatsRef.current = [];
       for (const obj of sceneObjects) scene.remove(obj);
@@ -787,30 +856,30 @@ function StarMapInner({
   // --- node objects: glowing planet + halo + label --------------------------
   const nodeThreeObject = useCallback(
     (node: PoetNode) => {
+      // Star colour derives from the community palette, adjusted by fame:
+      // more famous → deeper/darker & more saturated, less famous → paler,
+      // plus a 1–10% random per-star variation (req 8).
+      const tier = fameTier(node);
       const color = new THREE.Color(groupColor.get(node.group) ?? '#8ecae6');
-      // famous poets shine as bright platinum-gold stars among the dust;
-      // overall brightness capped so close-ups stay crisp, not blown out
-      if (!node.generated) color.lerp(new THREE.Color('#fff2d8'), 0.45);
-      color.multiplyScalar(0.85);
+      color.lerp(WHITE, (tier / 4) * 0.5); // minor stars fade paler
+      color.multiplyScalar(0.85 - (4 - tier) * 0.03); // famous stars deeper
+      const jitter = (0.01 + Math.random() * 0.09) * (Math.random() < 0.5 ? -1 : 1);
+      color.multiplyScalar(1 + jitter);
       // fame-based random size: famous stars larger, minor stars smaller,
       // final factor within 80%–150% of the base radius (req 3)
       const r = nodeRadius(node) * fameSizeMul(node);
       const g = new THREE.Group();
 
-      // Small hard sphere: crisp bright kernel + reliable click target. All
-      // node parts are world-space geometry/sprites, so they scale with
-      // perspective (near-big / far-small) at any view (req 5).
-      const sphereMat = new THREE.MeshBasicMaterial({ color: color.clone(), transparent: true });
-      const sphere = new THREE.Mesh(new THREE.SphereGeometry(r * 0.62, 12, 12), sphereMat);
-      g.add(sphere);
-
-      // Soft-edged body sprite: gives the star a gradient boundary that melts
-      // into the background instead of a hard-edged ball.
+      // Soft-edged body sprite = the whole star (crisp bright core + gradient
+      // edge) and the click target. World-space sprite → scales with
+      // perspective at any view (req 5). Minor stars use ONLY this one sprite
+      // (a single draw call) so a large catalogue still rotates smoothly (#15);
+      // named poets add an outer halo.
       const bodyMat = new THREE.SpriteMaterial({
         map: starBodyTexture,
         color: color.clone(),
         transparent: true,
-        opacity: 0.9,
+        opacity: 0.92,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
       });
@@ -818,24 +887,27 @@ function StarMapInner({
       body.scale.set(r * 3.4, r * 3.4, 1);
       g.add(body);
 
-      const haloMat = new THREE.SpriteMaterial({
-        map: haloTexture,
-        color: color.clone(),
-        transparent: true,
-        opacity: 0.12,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-      });
-      const halo = new THREE.Sprite(haloMat);
-      halo.scale.set(r * 7, r * 7, 1);
-      g.add(halo);
+      let haloMat: THREE.SpriteMaterial | null = null;
+      if (!node.generated) {
+        haloMat = new THREE.SpriteMaterial({
+          map: haloTexture,
+          color: color.clone(),
+          transparent: true,
+          opacity: 0.12,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        });
+        const halo = new THREE.Sprite(haloMat);
+        halo.scale.set(r * 7, r * 7, 1);
+        g.add(halo);
+      }
 
       const label = new SpriteText(node.name, 3.6, '#dde0ee');
       label.fontFace = '"Noto Serif SC", "Songti SC", serif';
       label.fontWeight = '500';
       label.position.set(0, -(r + 4.5), 0);
       label.material.depthWrite = false;
-      label.visible = !node.generated;
+      label.visible = false; // no labels by default; shown only on selection (#1)
       g.add(label);
 
       // per-star ambient drift: a random unit direction and a speed jittered
@@ -849,7 +921,6 @@ function StarMapInner({
       visualsRef.current.set(node.id, {
         node,
         obj: g,
-        sphereMat,
         bodyMat,
         haloMat,
         label,
@@ -913,69 +984,70 @@ function StarMapInner({
       if (!hasSelection) {
         const matches = !filterNodeIds || filterNodeIds.has(id);
         if (matches) {
-          v.sphereMat.color.copy(v.baseColor);
-          v.sphereMat.opacity = 1;
           v.bodyMat.color.copy(v.baseColor);
-          v.bodyMat.opacity = 0.9;
-          v.haloMat.color.copy(v.baseColor);
-          v.haloMat.opacity = filterNodeIds ? 0.18 : 0.1;
-          v.label.visible = !v.node.generated;
+          v.bodyMat.opacity = 0.92;
+          if (v.haloMat) {
+            v.haloMat.color.copy(v.baseColor);
+            v.haloMat.opacity = filterNodeIds ? 0.18 : 0.1;
+          }
+          v.label.visible = false; // idle: no floating text (#1)
           v.label.color = '#dde0ee';
         } else {
           // not matching the filter: 60% dimmer, restored when cleared
-          v.sphereMat.color.copy(v.baseColor).multiplyScalar(0.4);
-          v.sphereMat.opacity = 0.7;
           v.bodyMat.color.copy(v.baseColor).multiplyScalar(0.4);
           v.bodyMat.opacity = 0.5;
-          v.haloMat.color.copy(v.baseColor);
-          v.haloMat.opacity = 0.02;
+          if (v.haloMat) {
+            v.haloMat.color.copy(v.baseColor);
+            v.haloMat.opacity = 0.02;
+          }
           v.label.visible = false;
         }
       } else if (isSelected) {
         // dazzling burst, tinted and sized by the poet's fame tier:
         // gold → purple → blue → cyan → white, big/bright → small/dim
-        const tier = fameTier(v.node);
-        const tierColor = new THREE.Color(FAME_COLORS[tier]);
-        const scale = FAME_BURST_SCALE[tier];
-        const op = FAME_BURST_OPACITY[tier];
-        const beamLen = FAME_BEAM_LEN[tier];
+        const st = fameTier(v.node);
+        const tierColor = new THREE.Color(FAME_COLORS[st]);
+        const scale = FAME_BURST_SCALE[st];
+        const op = FAME_BURST_OPACITY[st];
+        const beamLen = FAME_BEAM_LEN[st];
         burst.group.visible = true;
         burst.glow.color.copy(tierColor);
         burst.glow.opacity = op * 0.5;
         burst.glowSprite.scale.set(scale * 0.55, scale * 0.55, 1);
-        burst.beamMatH.color.copy(tierColor);
-        burst.beamMatH.opacity = op * 0.95;
+        // beams appear gradually (uElapsed driven by the tick); per-beam
+        // appear-time + opacity boost live in the shader attributes (#12/#13)
+        for (const bm of [burst.beamMatH, burst.beamMatV]) {
+          bm.uniforms.uColor.value.copy(tierColor);
+          bm.uniforms.uOpacity.value = op * 0.95;
+          bm.uniforms.uElapsed.value = 0;
+        }
         burst.beamsH.scale.setScalar(beamLen);
-        burst.beamMatV.color.copy(tierColor);
-        burst.beamMatV.opacity = 0; // sprouts ~1 s later, driven by the tick
         burst.beamsV.scale.setScalar(beamLen);
         burstBaseRef.current = { h: op * 0.95, glow: op * 0.5 };
         burstStartRef.current = performance.now();
         v.obj.add(burst.group);
-        v.sphereMat.color.copy(tierColor).lerp(WHITE, 0.4);
-        v.sphereMat.opacity = 1;
         v.bodyMat.color.copy(tierColor).lerp(WHITE, 0.3);
         v.bodyMat.opacity = 1;
-        v.haloMat.color.copy(tierColor);
-        v.haloMat.opacity = 0.55;
+        if (v.haloMat) {
+          v.haloMat.color.copy(tierColor);
+          v.haloMat.opacity = 0.55;
+        }
         // the selected star's own 3D label is hidden — the high-contrast
         // HTML overlay label (always facing the camera) takes over
         v.label.visible = false;
       } else if (isLit) {
-        v.sphereMat.color.copy(v.baseColor).lerp(WHITE, 0.15);
-        v.sphereMat.opacity = 1;
         v.bodyMat.color.copy(v.baseColor).lerp(WHITE, 0.1);
-        v.bodyMat.opacity = 0.9;
-        v.haloMat.color.copy(v.baseColor);
-        v.haloMat.opacity = 0.12;
+        v.bodyMat.opacity = 0.95;
+        if (v.haloMat) {
+          v.haloMat.color.copy(v.baseColor);
+          v.haloMat.opacity = 0.12;
+        }
         v.label.visible = true;
         v.label.color = '#dde0ee';
       } else {
-        v.sphereMat.color.copy(v.baseColor).multiplyScalar(0.22);
-        v.sphereMat.opacity = 0.35;
         v.bodyMat.color.copy(v.baseColor).multiplyScalar(0.22);
-        v.bodyMat.opacity = 0.3;
-        v.haloMat.opacity = 0.01;
+        v.bodyMat.opacity = 0.35;
+        if (v.haloMat) v.haloMat.opacity = 0.01;
         v.label.visible = false;
       }
     }
@@ -1002,6 +1074,66 @@ function StarMapInner({
       box.style.display = 'none';
     }
   }, [selectedNodeId, graphData]);
+
+  // (Re)build the comet photons for the currently highlighted links (req 3):
+  // a small head sprite + a tapered 6-point trail, one comet per link.
+  useEffect(() => {
+    const grp = cometGroupRef.current;
+    if (!grp) return;
+    for (const c of cometsRef.current) {
+      grp.remove(c.head);
+      const trail = c.head.userData.trail as THREE.Line;
+      grp.remove(trail);
+      c.geo.dispose();
+      (trail.material as THREE.Material).dispose();
+      (c.head.material as THREE.Material).dispose();
+    }
+    cometsRef.current = [];
+    if (!selectedNodeId) return;
+    const tierColor = new THREE.Color(
+      FAME_COLORS[fameTier(visualsRef.current.get(selectedNodeId)?.node ?? ({} as PoetNode))],
+    );
+    const TRAIL = 6;
+    for (const key of highlightLinkKeys) {
+      const [i1, i2] = key.split('|');
+      const n1 = visualsRef.current.get(i1)?.node;
+      const n2 = visualsRef.current.get(i2)?.node;
+      if (!n1 || !n2) continue;
+      // head travels outward from the selected star
+      const from = i1 === selectedNodeId ? n1 : n2;
+      const to = i1 === selectedNodeId ? n2 : n1;
+      const a = new THREE.Vector3(from.x ?? 0, from.y ?? 0, from.z ?? 0);
+      const b = new THREE.Vector3(to.x ?? 0, to.y ?? 0, to.z ?? 0);
+      const pos = new Float32Array(TRAIL * 3);
+      const col = new Float32Array(TRAIL * 3);
+      for (let k = 0; k < TRAIL; k++) {
+        const f = 1 - k / (TRAIL - 1);
+        col[k * 3] = tierColor.r * f;
+        col[k * 3 + 1] = tierColor.g * f;
+        col[k * 3 + 2] = tierColor.b * f;
+      }
+      const geo = new THREE.BufferGeometry();
+      const posAttr = new THREE.BufferAttribute(pos, 3);
+      geo.setAttribute('position', posAttr);
+      geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      const trailMat = new THREE.LineBasicMaterial({
+        vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      });
+      const trail = new THREE.Line(geo, trailMat);
+      trail.frustumCulled = false;
+      const headMat = new THREE.SpriteMaterial({
+        map: haloTexture, color: tierColor, transparent: true, opacity: 0.9,
+        depthWrite: false, blending: THREE.AdditiveBlending,
+      });
+      const head = new THREE.Sprite(headMat);
+      head.scale.set(3, 3, 1); // small ball (~70% smaller than before)
+      head.userData.trail = trail;
+      grp.add(trail, head);
+      cometsRef.current.push({
+        a, b, t: Math.random(), speed: 0.006 * (0.8 + Math.random() * 0.4), geo, posAttr, head,
+      });
+    }
+  }, [highlightLinkKeys, selectedNodeId, graphData, haloTexture]);
 
   // Filter changes pause the rotation briefly and re-align link geometry
   // (type-filtered links become visible at the current rotated positions).
@@ -1065,12 +1197,6 @@ function StarMapInner({
     [selectionActive, highlightLinkKeys, selectedLink, filterTypes, linkMatchesFilter],
   );
 
-  const linkParticles = useCallback(
-    (l: PoemLink) =>
-      l === selectedLink || (selectionActive && highlightLinkKeys.has(linkKey(l))) ? 2 : 0,
-    [selectionActive, highlightLinkKeys, selectedLink],
-  );
-
   // --- camera API ------------------------------------------------------------
   // Frame the whole graph: aim at the bbox centre (zoomToFit always aims at the
   // origin, which mis-frames offset subgraphs after filtering).
@@ -1087,10 +1213,12 @@ function StarMapInner({
     const camera = fg.camera() as THREE.PerspectiveCamera;
     const fitDist =
       (radius / Math.tan(((camera.fov / 2) * Math.PI) / 180) / Math.min(1, camera.aspect || 1)) *
-      1.18;
-    // gentle overhead tilt (~32°): wide, horizontally spreading composition
+      // 1.18 framing, pulled 15% closer so the nebula reads ~15% larger (#6)
+      (1.18 / 1.15) *
+      deviceRef.current.viewScale;
+    // overhead tilt (~52°) so the spiral arms read as a face-on galaxy
     fg.cameraPosition(
-      { x: cx, y: cy + fitDist * 0.53, z: cz + fitDist * 0.85 },
+      { x: cx, y: cy + fitDist * 0.78, z: cz + fitDist * 0.62 },
       { x: cx, y: cy, z: cz },
       duration,
     );
@@ -1185,10 +1313,11 @@ function StarMapInner({
     // sizeMul feeds perspective scaling (near-big/far-small); maxPx clamps so
     // grains never grow past a star. motion drifts each grain locally within
     // its arm; breath makes them flicker like breathing lamps.
+    const D = deviceRef.current;
     const DUST_LAYERS = [
-      { grains: 96, sigma: 12, sizeMul: 6, maxPx: 4, opacity: 0.6, bright: 1, motion: 5 },
-      { grains: 180, sigma: 26, sizeMul: 4.5, maxPx: 3, opacity: 0.46, bright: 0.7, motion: 6 },
-      { grains: 264, sigma: 42, sizeMul: 3.2, maxPx: 2.2, opacity: 0.28, bright: 0.5, motion: 7 },
+      { grains: 48, sigma: 12, sizeMul: 6, maxPx: 4, opacity: 0.6, bright: 1, motion: 5 },
+      { grains: 90, sigma: 26, sizeMul: 4.5, maxPx: 3, opacity: 0.46, bright: 0.7, motion: 6 },
+      { grains: 132, sigma: 42, sizeMul: 3.2, maxPx: 2.2, opacity: 0.28, bright: 0.5, motion: 7 },
     ];
     const dustPos: number[][][] = DUST_LAYERS.map(() =>
       Array.from({ length: RING_COUNT }, () => []),
@@ -1208,22 +1337,28 @@ function StarMapInner({
         });
       }
 
-      // --- star dust: golden-orange particle sea layered around the members
+      // --- star dust: a particle sea sharing the community's star colour,
+      // each grain jittered 1–10% (req 7). Vertical spread tapers with radius
+      // so the disc is ~5× thicker at the core than the rim (req 11).
       for (let li = 0; li < DUST_LAYERS.length; li++) {
         const layer = DUST_LAYERS[li];
+        const grains = Math.max(1, Math.round(layer.grains * D.particleMul));
         for (const seed of members) {
-          for (let i = 0; i < layer.grains; i++) {
+          const rSeed = Math.hypot((seed.x ?? 0) - gx, (seed.z ?? 0) - gz);
+          const taper = 0.2 + 0.8 * Math.exp(-rSeed / 150); // 1.0 core → 0.2 rim
+          for (let i = 0; i < grains; i++) {
             const g1 = () =>
               (Math.random() + Math.random() + Math.random() - 1.5) * layer.sigma;
             const px = (seed.x ?? 0) + g1();
-            const py = (seed.y ?? 0) + g1() * 0.3; // keep the disc thin
+            const py = (seed.y ?? 0) + g1() * 0.5 * taper;
             const pz = (seed.z ?? 0) + g1();
+            // base on the community colour; rare bright/pale accents for life
             const roll = Math.random();
-            if (roll < 0.62) tmp.copy(DUST_AMBER).lerp(color, 0.18);
-            else if (roll < 0.86) tmp.copy(DUST_COOL).lerp(color, 0.4);
-            else if (roll < 0.92) tmp.copy(DUST_PINK);
-            else tmp.copy(DUST_BRIGHT);
-            tmp.multiplyScalar((0.35 + Math.random() * 0.65) * layer.bright);
+            if (roll < 0.9) tmp.copy(color);
+            else if (roll < 0.96) tmp.copy(DUST_BRIGHT);
+            else tmp.copy(DUST_PINK).lerp(color, 0.4);
+            const jit = 1 + (Math.random() * 2 - 1) * 0.1; // ±1–10%
+            tmp.multiplyScalar((0.4 + Math.random() * 0.6) * layer.bright * jit);
             const ring = ringOf(px, pz);
             dustPos[li][ring].push(px - gx, py - gy, pz - gz);
             dustCol[li][ring].push(tmp.r, tmp.g, tmp.b);
@@ -1231,24 +1366,8 @@ function StarMapInner({
         }
       }
 
-      // --- floating dynasty/community label, like a data annotation adrift
-      const name = groupName.get(gid);
-      if (name && members.length > 3) {
-        const mid = members[Math.floor(members.length * 0.55)];
-        const label = new SpriteText(name, 11, '#9aa3bd');
-        label.fontFace = '"Noto Serif SC", "Songti SC", serif';
-        label.fontWeight = '400';
-        label.material.transparent = true;
-        label.material.opacity = 0.5;
-        label.material.userData.baseOpacity = 0.5;
-        label.material.depthWrite = false;
-        label.position.set(
-          (mid.x ?? 0) - gx,
-          (mid.y ?? 0) - gy + 30,
-          (mid.z ?? 0) - gz,
-        );
-        rot.rings.get(ringOf(mid.x ?? 0, mid.z ?? 0))!.pivot!.add(label);
-      }
+      // (floating dynasty labels removed — the nebula carries no text by
+      // default; the dynasty is shown on the detail card when selected, #1)
 
       // --- gauze wisps sampled along the arm, attached to their ring pivot
       const wispColor = color.clone().lerp(new THREE.Color('#aebfe8'), 0.55);
@@ -1292,7 +1411,7 @@ function StarMapInner({
         const dustMat = makeParticleMaterial({
           baseOpacity: layer.opacity,
           sizeMul: layer.sizeMul,
-          maxPx: layer.maxPx,
+          maxPx: layer.maxPx * D.maxPxMul,
           motion: layer.motion,
           breath: 1,
         });
@@ -1307,7 +1426,7 @@ function StarMapInner({
     // --- energy tide: cyan/ice-blue particle stream flowing from the upper
     // left toward the galactic core (static, independent of the rotation)
     {
-      const streamCount = 54000;
+      const streamCount = Math.round(54000 * D.particleMul);
       const sPos = new Float32Array(streamCount * 3);
       const sCol = new Float32Array(streamCount * 3);
       const P0 = new THREE.Vector3(-640, 170, -400);
@@ -1331,7 +1450,7 @@ function StarMapInner({
       }
       const streamGeo = makeParticleGeometry(sPos, sCol, 1);
       const streamMat = makeParticleMaterial({
-        baseOpacity: 0.55, sizeMul: 4, maxPx: 3, motion: 5, breath: 1,
+        baseOpacity: 0.55, sizeMul: 4, maxPx: 3 * D.maxPxMul, motion: 5, breath: 1,
       });
       dustMatsRef.current.push(streamMat);
       const stream = new THREE.Points(streamGeo, streamMat);
@@ -1345,8 +1464,8 @@ function StarMapInner({
     // same-palette motes filling the whole volume, so zoomed-in views float
     // inside a sea of particles instead of empty black space
     {
-      const haloCount = 15600;
-      const ambientCount = 31200;
+      const haloCount = Math.round(15600 * D.particleMul);
+      const ambientCount = Math.round(31200 * D.particleMul);
       const total = haloCount + ambientCount;
       const aPos = new Float32Array(total * 3);
       const aCol = new Float32Array(total * 3);
@@ -1376,7 +1495,7 @@ function StarMapInner({
       }
       const ambGeo = makeParticleGeometry(aPos, aCol, 1);
       const ambMat = makeParticleMaterial({
-        baseOpacity: 0.38, sizeMul: 3.4, maxPx: 3, motion: 6, breath: 1,
+        baseOpacity: 0.38, sizeMul: 3.4, maxPx: 3 * D.maxPxMul, motion: 6, breath: 1,
       });
       dustMatsRef.current.push(ambMat);
       const ambient = new THREE.Points(ambGeo, ambMat);
@@ -1388,7 +1507,7 @@ function StarMapInner({
 
     // --- central bulge: a dense knot of warm stars filling the core --------
     {
-      const bulgeCount = 3000;
+      const bulgeCount = Math.round(3000 * D.particleMul);
       const bPos = new Float32Array(bulgeCount * 3);
       const bCol = new Float32Array(bulgeCount * 3);
       for (let i = 0; i < bulgeCount; i++) {
@@ -1405,7 +1524,7 @@ function StarMapInner({
       }
       const bulgeGeo = makeParticleGeometry(bPos, bCol, 1);
       const bulgeMat = makeParticleMaterial({
-        baseOpacity: 0.8, sizeMul: 5, maxPx: 4, motion: 3, breath: 1,
+        baseOpacity: 0.5, sizeMul: 5, maxPx: 4 * D.maxPxMul, motion: 3, breath: 1,
       });
       dustMatsRef.current.push(bulgeMat);
       const bulge = new THREE.Points(bulgeGeo, bulgeMat);
@@ -1417,11 +1536,11 @@ function StarMapInner({
     // --- blazing white-blue star core: volumetric glow layers + a small
     // intensely bright kernel (bloom flares it) + radiating diffraction rays
     const coreSpecs = [
-      { map: nebulaTexture, color: '#26406e', scale: 440, opacity: 0.14 }, // volumetric haze
-      { map: haloTexture, color: '#9fc4ff', scale: 150, opacity: 0.28 },
-      { map: haloTexture, color: '#dfeaff', scale: 80, opacity: 0.45 },
-      { map: haloTexture, color: '#ffffff', scale: 30, opacity: 0.95 }, // kernel
-      { map: spikeTexture, color: '#cfe2ff', scale: 300, opacity: 0.2 }, // rays
+      { map: nebulaTexture, color: '#26406e', scale: 420, opacity: 0.1 }, // volumetric haze
+      { map: haloTexture, color: '#9fc4ff', scale: 130, opacity: 0.16 },
+      { map: haloTexture, color: '#dfeaff', scale: 70, opacity: 0.24 },
+      { map: haloTexture, color: '#ffffff', scale: 26, opacity: 0.5 }, // kernel
+      { map: spikeTexture, color: '#cfe2ff', scale: 260, opacity: 0.14 }, // rays
     ];
     for (const spec of coreSpecs) {
       const mat = new THREE.SpriteMaterial({
@@ -1469,6 +1588,7 @@ function StarMapInner({
   // --- per-frame animation: bloom, particle time/scale, node breathing,
   // burst reveal, and the selected-poet HTML label position ------------------
   useEffect(() => {
+    deviceRef.current = computeDevice(width);
     let raf = 0;
     const camera = () => fgRef.current!.camera() as THREE.PerspectiveCamera;
     const tick = () => {
@@ -1480,7 +1600,7 @@ function StarMapInner({
       const time = now / 1000;
       const d = fg.camera().position.distanceTo(rotationRef.current.center);
       const t = Math.min(1, Math.max(0, (d - 140) / 760)); // 140 → 900
-      bloom.strength = 0.1 + t * 0.5;
+      bloom.strength = (0.1 + t * 0.5) * deviceRef.current.bloomMul;
 
       // perspective point-size scale: matches three's sizeAttenuation formula
       const cam = camera();
@@ -1510,26 +1630,48 @@ function StarMapInner({
           const b = 0.5 + 0.5 * Math.sin(time * v.bspeed + v.phase); // 0..1
           // idle: 0.30→1.00 (70% swing); selection-others: 0.18→0.40 (~55%)
           const m = sel ? 0.18 + 0.22 * b : 0.3 + 0.7 * b;
-          v.sphereMat.color.copy(v.baseColor).multiplyScalar(m);
           v.bodyMat.color.copy(v.baseColor).multiplyScalar(m);
-          v.bodyMat.opacity = sel ? 0.45 * (0.5 + b) : 0.9;
-          v.haloMat.opacity = (sel ? 0.05 : 0.12) * (0.5 + b);
+          v.bodyMat.opacity = sel ? 0.45 * (0.5 + b) : 0.92;
+          if (v.haloMat) v.haloMat.opacity = (sel ? 0.05 : 0.12) * (0.5 + b);
         }
       }
 
-      // selection burst timeline: horizontal beams appear at once; the vertical
-      // hairs sprout ~1 s later; the whole set fades out 10 s after appearing.
+      // selection burst timeline: beams appear on their own schedules inside
+      // the shader (uElapsed); the whole set fades out 10 s after appearing.
       const burst = burstRef.current;
       if (burst && burst.group.parent && burst.group.visible) {
         const elapsed = now - burstStartRef.current;
         const base = burstBaseRef.current;
-        const vReveal = Math.min(1, Math.max(0, (elapsed - 1000) / 700));
         const fade =
           elapsed <= 10000 ? 1 : Math.max(0, 1 - (elapsed - 10000) / 1500);
-        burst.beamMatH.opacity = base.h * fade;
-        burst.beamMatV.opacity = base.h * vReveal * fade;
+        burst.beamMatH.uniforms.uElapsed.value = elapsed;
+        burst.beamMatV.uniforms.uElapsed.value = elapsed;
+        burst.beamMatH.uniforms.uOpacity.value = base.h * fade;
+        burst.beamMatV.uniforms.uOpacity.value = base.h * fade;
         burst.glow.opacity = base.glow * fade;
         if (fade <= 0) burst.group.visible = false;
+      }
+
+      // animate comet photons along the highlighted links (head + trail)
+      const comets = cometsRef.current;
+      if (comets.length) {
+        const TRAIL = 6;
+        const step = 0.05;
+        const tmpv = comet_tmp;
+        for (const c of comets) {
+          c.t += c.speed;
+          if (c.t > 1) c.t -= 1;
+          const arr = c.posAttr.array as Float32Array;
+          for (let k = 0; k < TRAIL; k++) {
+            const tk = Math.max(0, c.t - k * step);
+            tmpv.lerpVectors(c.a, c.b, tk);
+            arr[k * 3] = tmpv.x;
+            arr[k * 3 + 1] = tmpv.y;
+            arr[k * 3 + 2] = tmpv.z;
+            if (k === 0) c.head.position.copy(tmpv);
+          }
+          c.posAttr.needsUpdate = true;
+        }
       }
 
       // track the selected poet's HTML label to its on-screen position
@@ -1611,7 +1753,9 @@ function StarMapInner({
 
     const loop = (now: number) => {
       raf = requestAnimationFrame(loop);
-      const dt = Math.min(0.1, (now - last) / 1000);
+      // clamp dt tighter so a dropped frame can't cause a visible jump; this
+      // keeps the differential rotation gliding smoothly (#15)
+      const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
       step(dt, now);
     };
@@ -1666,9 +1810,7 @@ function StarMapInner({
         linkWidth={0}
         linkVisibility={linkVisibility}
         linkOpacity={1}
-        linkDirectionalParticles={linkParticles}
-        linkDirectionalParticleWidth={1.4}
-        linkDirectionalParticleSpeed={0.006}
+        linkDirectionalParticles={0}
         onLinkClick={onLinkClick}
         onBackgroundClick={onBackgroundClick}
         enableNodeDrag={false}

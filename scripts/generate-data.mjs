@@ -34,6 +34,8 @@ const gauss = () => (rand() + rand() + rand() - 1.5) / 1.5; // ~[-1,1], center-w
 // ---------------------------------------------------------------------------
 // Milky, desaturated astrophoto palette: silvery blues with faint warm/pink
 // accents, so clusters read like regions of one galaxy instead of candy blobs.
+// Ids 0–9 hold the curated real poets; 10+ are additional dynasty communities
+// filled procedurally so the map spans all major eras (先秦 → 近现代).
 const GROUPS = [
   { id: 0, name: '建安·魏晋', color: '#b8c8ea' },
   { id: 1, name: '初唐', color: '#c9d5f2' },
@@ -45,6 +47,15 @@ const GROUPS = [
   { id: 7, name: '晚唐', color: '#e2c6b3' },
   { id: 8, name: '北宋', color: '#b5cfe8' },
   { id: 9, name: '南宋', color: '#c5dcea' },
+  { id: 10, name: '先秦·两汉', color: '#d9c9a6' },
+  { id: 11, name: '南北朝', color: '#a8c2d6' },
+  { id: 12, name: '隋·唐音', color: '#cdd8ee' },
+  { id: 13, name: '五代·词', color: '#e0bcc8' },
+  { id: 14, name: '辽金', color: '#a6c4c0' },
+  { id: 15, name: '元曲', color: '#e8c4a0' },
+  { id: 16, name: '明', color: '#bcd0e6' },
+  { id: 17, name: '清', color: '#cabfe2' },
+  { id: 18, name: '近现代', color: '#c8dce0' },
 ];
 
 // Spiral-galaxy layout: each community (in dynasty/chronological order) is a
@@ -424,7 +435,10 @@ const GIVEN = '之涣清远山川湖静深云翰文若虚淮岸松柏鹤龄嗣�
 const CY1 = '子文季伯仲叔公元德君景士彦孝敬永延'.split('');
 const CY2 = '安和之卿甫翁然美真卿平直方远山川度'.split('');
 
-const DYNASTY_BY_GROUP = ['魏晋', '唐', '唐', '唐', '唐', '唐', '唐', '唐', '北宋', '南宋'];
+const DYNASTY_BY_GROUP = [
+  '魏晋', '唐', '唐', '唐', '唐', '唐', '唐', '唐', '北宋', '南宋',
+  '汉', '南朝', '唐', '五代', '金', '元', '明', '清', '近现代',
+];
 const PLACES = ['江陵', '洛阳', '广陵', '吴中', '蜀中', '岭南', '塞北', '金陵', '襄阳', '长安', '杭州', '湖州', '夜郎', '柴桑'];
 const LINK_TYPES = ['赠诗', '唱和', '送别', '悼亡', '提及'];
 
@@ -452,8 +466,8 @@ function genEvidence(type, sourceName, targetName) {
   }];
 }
 
-const TOTAL_NODES = 500;
-const TOTAL_LINKS = 3000;
+const TOTAL_NODES = 1000;
+const TOTAL_LINKS = 5200;
 
 const nodes = [];
 const usedNames = new Set();
@@ -513,10 +527,26 @@ for (const g of GROUPS) {
     const scatter = 8 + 14 * s;
     n.x = r * Math.cos(theta) + gauss() * scatter;
     n.z = r * Math.sin(theta) + gauss() * scatter;
-    n.y = gauss() * (20 * Math.exp(-r / 130) + 5);
+    // Volumetric disc: thickness tapers from the galactic centre outward, the
+    // centre being 5× thicker than the rim (thick middle → thin edges, #11).
+    const thickness = 4 + 16 * Math.exp(-r / 150); // ~20 at core, ~4 at rim
+    n.y = gauss() * thickness;
   });
 }
 for (const n of nodes) delete n.isHub;
+
+// --- centre the galaxy and assign each poet a stable 3D coordinate (relative
+// to the galactic centre) and a unique catalogue number (#4, #5) ------------
+{
+  let cx = 0, cy = 0, cz = 0;
+  for (const n of nodes) { cx += n.x; cy += n.y; cz += n.z; }
+  cx /= nodes.length; cy /= nodes.length; cz /= nodes.length;
+  nodes.forEach((n, i) => {
+    n.x -= cx; n.y -= cy; n.z -= cz;
+    n.coord = { x: Math.round(n.x), y: Math.round(n.y), z: Math.round(n.z) };
+    n.code = `SH-${String(i + 1).padStart(4, '0')}`;
+  });
+}
 
 const membersByGroup = GROUPS.map((g) =>
   nodes.filter((n) => n.group === g.id)

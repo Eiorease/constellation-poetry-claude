@@ -64,6 +64,16 @@ export function DetailPanel({
       <header className="flex items-start justify-between px-5 pt-5">
         <div>
           <h2 className="text-2xl tracking-[0.3em] text-moon">{node.name}</h2>
+          {node.code && (
+            <p className="mt-1 font-mono text-[11px] tracking-[0.2em] text-gold/70">
+              编号 {node.code}
+            </p>
+          )}
+          {node.coord && (
+            <p className="mt-0.5 font-mono text-[10px] tracking-wider text-ink-400">
+              坐标 ({node.coord.x}, {node.coord.y}, {node.coord.z})
+            </p>
+          )}
           <p className="mt-1.5 text-xs tracking-wider text-ink-400">
             {node.courtesyName && <span>字{node.courtesyName} · </span>}
             {node.dynasty}

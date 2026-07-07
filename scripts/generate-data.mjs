@@ -8,7 +8,7 @@
  *
  * Run: npm run generate-data
  */
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -466,8 +466,38 @@ function genEvidence(type, sourceName, targetName) {
   }];
 }
 
-const TOTAL_NODES = 1000;
-const TOTAL_LINKS = 5200;
+// Cap on total real poets (perf: each is at least one sprite). The curated
+// core keeps its documented relationships; the rest are real poets pulled from
+// the chinese-poetry corpus (scripts/real-poets.json) — real names, dynasties
+// and poem counts, arranged into the galaxy. Only the curated relationships
+// are documented; the wider link web is illustrative.
+const MAX_NODES = 1600;
+
+// real poets ingested from the open corpus (see scripts/fetch-poets.mjs)
+let REAL_POETS = [];
+try {
+  REAL_POETS = JSON.parse(
+    readFileSync(join(__dirname, 'real-poets.json'), 'utf8'),
+  );
+} catch {
+  console.warn('real-poets.json missing — run: node scripts/fetch-poets.mjs');
+}
+
+// which spiral arms each dynasty's real poets spread across (visual grouping)
+const DYNASTY_GROUPS = {
+  唐: [1, 2, 3, 4, 5, 6, 7, 12],
+  宋: [8, 9, 13],
+  元: [15],
+  先秦: [10],
+};
+const groupCursor = {};
+function groupForDynasty(dyn) {
+  const cands = DYNASTY_GROUPS[dyn];
+  if (!cands) return 10; // fallback arm
+  const k = dyn;
+  groupCursor[k] = (groupCursor[k] ?? 0) + 1;
+  return cands[groupCursor[k] % cands.length];
+}
 
 const nodes = [];
 const usedNames = new Set();
@@ -494,19 +524,17 @@ function addNode(name, courtesyName, dynasty, poemCount, group, isHub, generated
   return id;
 }
 
+// 1) curated real poets (documented relationships, courtesy names)
 for (const [name, cy, dyn, pc, group, hub] of CURATED_POETS) {
   addNode(name, cy, dyn, pc, group, hub, false);
 }
 
-// Fill remaining nodes with procedurally generated minor poets.
-while (nodes.length < TOTAL_NODES) {
-  let name;
-  do {
-    name = pick(SURNAMES) + (rand() < 0.45 ? pick(GIVEN) : pick(GIVEN) + pick(GIVEN));
-  } while (usedNames.has(name));
-  const courtesyName = pick(CY1) + pick(CY2);
-  const group = randInt(0, GROUPS.length - 1);
-  addNode(name, courtesyName, DYNASTY_BY_GROUP[group], randInt(10, 420), group, false, true);
+// 2) fill the rest with real poets from the corpus (deduped against curated).
+//    every node is now a real historical poet — no invented names.
+for (const p of REAL_POETS) {
+  if (nodes.length >= MAX_NODES) break;
+  if (usedNames.has(p.name)) continue;
+  addNode(p.name, '', p.dynasty, p.poemCount, groupForDynasty(p.dynasty), false, false);
 }
 
 // --- spiral-arm position pass ----------------------------------------------
@@ -572,29 +600,29 @@ for (const [s, t, w, type, evs] of CURATED_LINKS) {
   addLink(idByName.get(s), idByName.get(t), w, type, evidence, false);
 }
 
-// Intra-community links: every generated poet orbits 1–2 hubs and befriends peers.
+// Illustrative intra-community links: every non-curated poet orbits 1–2 hubs
+// and befriends a few peers in its arm (marked generated — not documented).
 const GEN_TYPE_POOL = ['赠诗', '赠诗', '赠诗', '唱和', '唱和', '唱和', '送别', '送别', '提及', '提及', '悼亡'];
+const curatedNames = new Set(CURATED_POETS.map((p) => p[0]));
 for (const node of nodes) {
-  if (!node.generated) continue;
+  if (curatedNames.has(node.name)) continue; // curated keep their real links
   const hubs = hubsByGroup[node.group];
   const peers = membersByGroup[node.group];
-  const nHubLinks = randInt(1, 2);
-  for (let i = 0; i < nHubLinks && hubs.length; i++) {
+  if (peers.length < 2) continue;
+  for (let i = 0; i < randInt(1, 2) && hubs.length; i++) {
     const hub = pick(hubs);
     const type = pick(GEN_TYPE_POOL);
-    addLink(node.id, hub.id, randInt(3, 7), type, genEvidence(type, node.name, hub.name), true);
+    if (hub.id !== node.id) addLink(node.id, hub.id, randInt(3, 7), type, genEvidence(type, node.name, hub.name), true);
   }
-  const nPeerLinks = randInt(2, 4);
-  for (let i = 0; i < nPeerLinks; i++) {
+  for (let i = 0; i < randInt(2, 4); i++) {
     const peer = pick(peers);
     const type = pick(GEN_TYPE_POOL);
-    addLink(node.id, peer.id, randInt(2, 6), type, genEvidence(type, node.name, peer.name), true);
+    if (peer.id !== node.id) addLink(node.id, peer.id, randInt(2, 6), type, genEvidence(type, node.name, peer.name), true);
   }
 }
 
 // Sparse cross-community links (weaker, dimmer).
-const N_CROSS = 260;
-for (let i = 0; i < N_CROSS; i++) {
+for (let i = 0; i < 300; i++) {
   const a = pick(nodes);
   const b = pick(nodes);
   if (a.group === b.group) continue;
@@ -603,10 +631,12 @@ for (let i = 0; i < N_CROSS; i++) {
 }
 
 // Top up to ~TOTAL_LINKS with more intra-community links.
+const TOTAL_LINKS = nodes.length * 4;
+const nonEmptyGroups = GROUPS.map((g) => g.id).filter((id) => membersByGroup[id].length >= 2);
 let guard = 0;
-while (links.length < TOTAL_LINKS && guard < 50000) {
+while (links.length < TOTAL_LINKS && guard < 80000) {
   guard++;
-  const group = randInt(0, GROUPS.length - 1);
+  const group = pick(nonEmptyGroups);
   const members = membersByGroup[group];
   const a = pick(members);
   const b = pick(members);

@@ -3,7 +3,6 @@ import ForceGraph3D, { type ForceGraphMethods } from 'react-force-graph-3d';
 import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import type { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import SpriteText from 'three-spritetext';
 import {
   endpointId,
   RELATION_COLORS,
@@ -286,6 +285,7 @@ function makeParticleMaterial(opts: {
   motion?: number;
   breath?: number;
 }): THREE.ShaderMaterial {
+  const baseOpacity = opts.baseOpacity * 0.9; // overall −10% brightness (#5)
   const mat = new THREE.ShaderMaterial({
     uniforms: {
       uTime: { value: 0 },
@@ -293,7 +293,7 @@ function makeParticleMaterial(opts: {
       uSizeMul: { value: opts.sizeMul ?? 1 },
       uMinPx: { value: opts.minPx ?? 0.7 },
       uMaxPx: { value: opts.maxPx ?? 5 },
-      uOpacity: { value: opts.baseOpacity },
+      uOpacity: { value: baseOpacity },
       uMotion: { value: opts.motion ?? 0 },
       uBreath: { value: opts.breath ?? 0 },
     },
@@ -339,7 +339,7 @@ function makeParticleMaterial(opts: {
         gl_FragColor = vec4(vColor * vFade, a * uOpacity);
       }`,
   });
-  mat.userData.baseOpacity = opts.baseOpacity;
+  mat.userData.baseOpacity = baseOpacity;
   return mat;
 }
 
@@ -373,7 +373,6 @@ interface NodeVisual {
   obj: THREE.Group;
   bodyMat: THREE.SpriteMaterial;
   haloMat: THREE.SpriteMaterial | null; // named poets only
-  label: SpriteText;
   baseColor: THREE.Color;
   /** breathing phase & angular speed (period 1–2 s) */
   phase: number;
@@ -618,7 +617,8 @@ function StarMapInner({
       const at = 0.2 + Math.random() * 0.7;
       const bx = Math.cos(ray.a) * ray.len * at;
       const bz = Math.sin(ray.a) * ray.len * at;
-      const vlen = (0.12 + Math.random() * 0.28) * (Math.random() < 0.5 ? -1 : 1);
+      // long vertical hairs that shoot right past the screen edge (#3)
+      const vlen = (3.5 + Math.random() * 3) * (Math.random() < 0.5 ? -1 : 1);
       return {
         x0: bx, y0: 0, z0: bz,
         x1: bx + (Math.random() - 0.5) * 0.03,
@@ -874,6 +874,7 @@ function StarMapInner({
       color.multiplyScalar(0.85 - (4 - tier) * 0.03); // famous stars deeper
       const jitter = (0.01 + Math.random() * 0.09) * (Math.random() < 0.5 ? -1 : 1);
       color.multiplyScalar(1 + jitter);
+      color.multiplyScalar(0.9); // overall −10% brightness (#5)
       // fame-based random size: famous stars larger, minor stars smaller,
       // final factor within 80%–150% of the base radius (req 3)
       const r = nodeRadius(node) * fameSizeMul(node);
@@ -881,9 +882,10 @@ function StarMapInner({
 
       // Soft-edged body sprite = the whole star (crisp bright core + gradient
       // edge) and the click target. World-space sprite → scales with
-      // perspective at any view (req 5). Minor stars use ONLY this one sprite
-      // (a single draw call) so a large catalogue still rotates smoothly (#15);
-      // named poets add an outer halo.
+      // perspective at any view (req 5). Most stars use ONLY this one sprite
+      // (a single draw call) so the 1600-poet catalogue still rotates smoothly
+      // (#15); only prominent poets add an outer halo. No 3D text labels —
+      // the selected poet's name shows via the HTML overlay only (#1).
       const bodyMat = new THREE.SpriteMaterial({
         map: starBodyTexture,
         color: color.clone(),
@@ -897,7 +899,7 @@ function StarMapInner({
       g.add(body);
 
       let haloMat: THREE.SpriteMaterial | null = null;
-      if (!node.generated) {
+      if (tier <= 1) {
         haloMat = new THREE.SpriteMaterial({
           map: haloTexture,
           color: color.clone(),
@@ -910,14 +912,6 @@ function StarMapInner({
         halo.scale.set(r * 7, r * 7, 1);
         g.add(halo);
       }
-
-      const label = new SpriteText(node.name, 3.6, '#dde0ee');
-      label.fontFace = '"Noto Serif SC", "Songti SC", serif';
-      label.fontWeight = '500';
-      label.position.set(0, -(r + 4.5), 0);
-      label.material.depthWrite = false;
-      label.visible = false; // no labels by default; shown only on selection (#1)
-      g.add(label);
 
       // per-star ambient drift: a random unit direction and a speed jittered
       // ±5–10% around a base, small amplitude so the star stays in its arm
@@ -932,7 +926,6 @@ function StarMapInner({
         obj: g,
         bodyMat,
         haloMat,
-        label,
         baseColor: color,
         phase: Math.random() * Math.PI * 2,
         bspeed: (Math.PI * 2) / (1 + Math.random()), // period 1–2 s
@@ -999,8 +992,6 @@ function StarMapInner({
             v.haloMat.color.copy(v.baseColor);
             v.haloMat.opacity = filterNodeIds ? 0.18 : 0.1;
           }
-          v.label.visible = false; // idle: no floating text (#1)
-          v.label.color = '#dde0ee';
         } else {
           // not matching the filter: 60% dimmer, restored when cleared
           v.bodyMat.color.copy(v.baseColor).multiplyScalar(0.4);
@@ -1009,7 +1000,6 @@ function StarMapInner({
             v.haloMat.color.copy(v.baseColor);
             v.haloMat.opacity = 0.02;
           }
-          v.label.visible = false;
         }
       } else if (isSelected) {
         // dazzling burst, tinted and sized by the poet's fame tier:
@@ -1044,7 +1034,6 @@ function StarMapInner({
         }
         // the selected star's own 3D label is hidden — the high-contrast
         // HTML overlay label (always facing the camera) takes over
-        v.label.visible = false;
       } else if (isLit) {
         v.bodyMat.color.copy(v.baseColor).lerp(WHITE, 0.1);
         v.bodyMat.opacity = 0.95;
@@ -1052,13 +1041,10 @@ function StarMapInner({
           v.haloMat.color.copy(v.baseColor);
           v.haloMat.opacity = 0.12;
         }
-        v.label.visible = true;
-        v.label.color = '#dde0ee';
       } else {
         v.bodyMat.color.copy(v.baseColor).multiplyScalar(0.22);
         v.bodyMat.opacity = 0.35;
         if (v.haloMat) v.haloMat.opacity = 0.01;
-        v.label.visible = false;
       }
     }
   }, [highlightNodeIds, selectedNodeId, graphData, filterNodeIds, filterTypes, applyDressingDim, getBurst]);
@@ -1218,21 +1204,21 @@ function StarMapInner({
     const cx = (bbox.x[0] + bbox.x[1]) / 2;
     const cy = (bbox.y[0] + bbox.y[1]) / 2;
     const cz = (bbox.z[0] + bbox.z[1]) / 2;
-    const radius =
-      Math.max(bbox.x[1] - bbox.x[0], bbox.y[1] - bbox.y[0], bbox.z[1] - bbox.z[0]) / 2 || 120;
+    // horizontal (disc) radius — the disc lies in the XZ plane; a 20° tilt
+    // barely changes its on-screen width, so we fit the width to it.
+    const discRadius =
+      Math.max(bbox.x[1] - bbox.x[0], bbox.z[1] - bbox.z[0]) / 2 || 120;
     const camera = fg.camera() as THREE.PerspectiveCamera;
-    const fitDist =
-      (radius / Math.tan(((camera.fov / 2) * Math.PI) / 180) / Math.min(1, camera.aspect || 1)) *
-      // 1.18 framing, pulled 15% closer so the nebula reads ~15% larger (#6)
-      (1.18 / 1.15) *
-      deviceRef.current.viewScale;
-    // 20° tilt above the disc plane — a low, cinematic angle rather than a
-    // top-down view (#4). The look-at point is nudged up a little so the disc
-    // sits vertically centred on screen instead of low (#3).
+    // Frame so the disc diameter fills 80% of the viewport width, i.e. a 10%
+    // margin on each side (#4), adapting to any screen aspect.
+    const tanHalfV = Math.tan(((camera.fov / 2) * Math.PI) / 180);
+    const tanHalfH = tanHalfV * (camera.aspect || 1);
+    const fitDist = (discRadius / (0.8 * tanHalfH)) * deviceRef.current.viewScale;
+    // 20° tilt above the disc plane — a low, cinematic angle (#4), disc centred.
     const el = (20 * Math.PI) / 180;
     fg.cameraPosition(
       { x: cx, y: cy + fitDist * Math.sin(el), z: cz + fitDist * Math.cos(el) },
-      { x: cx, y: cy + radius * 0.18, z: cz },
+      { x: cx, y: cy, z: cz },
       duration,
     );
   }, []);

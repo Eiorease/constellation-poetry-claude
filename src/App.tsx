@@ -196,10 +196,10 @@ export default function App() {
             诗人星图
           </h1>
           <p className="mt-1 hidden text-[11px] tracking-[0.3em] text-ink-400 sm:block">
-            千年唱和 · 星汉灿烂 — {counts.realPoets} 位真实诗人 · {counts.realLinks} 段文献关系
+            千年唱和 · 星汉灿烂 — {counts.realPoets.toLocaleString()} 位真实诗人
           </p>
           <p className="mt-0.5 hidden text-[10px] tracking-[0.2em] text-ink-400/70 sm:block">
-            另含 {counts.total - counts.realPoets} 演示星辰,构成完整星海
+            {counts.realLinks} 段文献实证交游 · 余为示意关系
           </p>
         </div>
         <div className="pointer-events-auto">

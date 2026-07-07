@@ -48,6 +48,16 @@ export default function App() {
     return seen;
   }, [data]);
 
+  // honest breakdown: only a curated core are documented real poets; the rest
+  // are procedurally generated demo stars
+  const counts = useMemo(() => {
+    const nodes = data?.nodes ?? [];
+    const links = data?.links ?? [];
+    const realPoets = nodes.filter((n) => !n.generated).length;
+    const realLinks = links.filter((l) => !l.generated).length;
+    return { realPoets, total: nodes.length, realLinks, totalLinks: links.length };
+  }, [data]);
+
   const allTypes = useMemo(() => {
     const seen: RelationType[] = [];
     for (const l of data?.links ?? []) if (!seen.includes(l.type)) seen.push(l.type);
@@ -186,7 +196,10 @@ export default function App() {
             诗人星图
           </h1>
           <p className="mt-1 hidden text-[11px] tracking-[0.3em] text-ink-400 sm:block">
-            千年唱和 · 星汉灿烂 — {data.nodes.length} 位诗人 · {data.links.length} 段情谊
+            千年唱和 · 星汉灿烂 — {counts.realPoets} 位真实诗人 · {counts.realLinks} 段文献关系
+          </p>
+          <p className="mt-0.5 hidden text-[10px] tracking-[0.2em] text-ink-400/70 sm:block">
+            另含 {counts.total - counts.realPoets} 演示星辰,构成完整星海
           </p>
         </div>
         <div className="pointer-events-auto">

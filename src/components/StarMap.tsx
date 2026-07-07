@@ -595,13 +595,15 @@ function StarMapInner({
 
     // Horizontal rays radiate flat from the star body, each tilted a random
     // ±10° off the galactic plane (#12); they appear over 1–3 s (#13).
+    const H_COUNT = 294; // 420 −30% (#5)
+    const V_COUNT = 224; // 320 −30% (#5)
     const dirs: { a: number; len: number }[] = [];
-    for (let i = 0; i < 420; i++) {
+    for (let i = 0; i < H_COUNT; i++) {
       dirs.push({ a: Math.random() * Math.PI * 2, len: 0.5 + Math.random() * 0.5 });
     }
-    const h = mkBeams(420, 0, 2200, (i) => {
+    const h = mkBeams(H_COUNT, 0, 2200, (i) => {
       const { a, len } = dirs[i];
-      const tilt = ((Math.random() * 2 - 1) * 10 * Math.PI) / 180; // ±10°
+      const tilt = ((Math.random() * 2 - 1) * 7 * Math.PI) / 180; // ±7° (−30%)
       return {
         x0: 0, y0: 0, z0: 0,
         x1: Math.cos(a) * len,
@@ -611,7 +613,7 @@ function StarMapInner({
     });
     // Vertical hairs sprout from random points ALONG the horizontal rays and
     // rise perpendicular; they appear 1–3 s after the horizontals (#7, #13).
-    const v = mkBeams(320, 2500, 5000, () => {
+    const v = mkBeams(V_COUNT, 2500, 5000, () => {
       const ray = dirs[Math.floor(Math.random() * dirs.length)];
       const at = 0.2 + Math.random() * 0.7;
       const bx = Math.cos(ray.a) * ray.len * at;
@@ -802,9 +804,15 @@ function StarMapInner({
     // Any drag/zoom pauses the rotation immediately.
     const controls = fg.controls() as OrbitControls;
     controls.autoRotate = false;
+    // Pause the nebula rotation only on *real user input* (drag / wheel),
+    // NOT on programmatic camera moves. Listening to OrbitControls 'change'
+    // also fired during intro/focus tweens, which paused the rotation every
+    // time the view moved — so we bind pointer/wheel on the canvas instead.
     const onControlsActivity = () => notifyInteraction();
     controls.addEventListener('start', onControlsActivity);
-    controls.addEventListener('change', onControlsActivity);
+    const dom = fg.renderer().domElement;
+    dom.addEventListener('pointerdown', onControlsActivity);
+    dom.addEventListener('wheel', onControlsActivity, { passive: true });
 
     // Start far out; we glide in with zoomToFit once the layout settles.
     fg.cameraPosition({ x: 0, y: 0, z: DEFAULT_CAMERA_DISTANCE * 2.4 });
@@ -826,7 +834,8 @@ function StarMapInner({
       clearTimeout(kickTimer);
       document.removeEventListener('visibilitychange', onVisible);
       controls.removeEventListener('start', onControlsActivity);
-      controls.removeEventListener('change', onControlsActivity);
+      dom.removeEventListener('pointerdown', onControlsActivity);
+      dom.removeEventListener('wheel', onControlsActivity);
       bloomRef.current = null;
       fg.postProcessingComposer().removePass(bloom);
       scene.background = null;
@@ -1016,14 +1025,15 @@ function StarMapInner({
         burst.glowSprite.scale.set(scale * 0.55, scale * 0.55, 1);
         // beams appear gradually (uElapsed driven by the tick); per-beam
         // appear-time + opacity boost live in the shader attributes (#12/#13)
+        const beamOp = Math.min(1, op * 0.95 * 1.4); // opacity +40% (#5)
         for (const bm of [burst.beamMatH, burst.beamMatV]) {
           bm.uniforms.uColor.value.copy(tierColor);
-          bm.uniforms.uOpacity.value = op * 0.95;
+          bm.uniforms.uOpacity.value = beamOp;
           bm.uniforms.uElapsed.value = 0;
         }
         burst.beamsH.scale.setScalar(beamLen);
         burst.beamsV.scale.setScalar(beamLen);
-        burstBaseRef.current = { h: op * 0.95, glow: op * 0.5 };
+        burstBaseRef.current = { h: beamOp, glow: op * 0.5 };
         burstStartRef.current = performance.now();
         v.obj.add(burst.group);
         v.bodyMat.color.copy(tierColor).lerp(WHITE, 0.3);
@@ -1216,10 +1226,13 @@ function StarMapInner({
       // 1.18 framing, pulled 15% closer so the nebula reads ~15% larger (#6)
       (1.18 / 1.15) *
       deviceRef.current.viewScale;
-    // overhead tilt (~52°) so the spiral arms read as a face-on galaxy
+    // 20° tilt above the disc plane — a low, cinematic angle rather than a
+    // top-down view (#4). The look-at point is nudged up a little so the disc
+    // sits vertically centred on screen instead of low (#3).
+    const el = (20 * Math.PI) / 180;
     fg.cameraPosition(
-      { x: cx, y: cy + fitDist * 0.78, z: cz + fitDist * 0.62 },
-      { x: cx, y: cy, z: cz },
+      { x: cx, y: cy + fitDist * Math.sin(el), z: cz + fitDist * Math.cos(el) },
+      { x: cx, y: cy + radius * 0.18, z: cz },
       duration,
     );
   }, []);
@@ -1345,7 +1358,7 @@ function StarMapInner({
         const grains = Math.max(1, Math.round(layer.grains * D.particleMul));
         for (const seed of members) {
           const rSeed = Math.hypot((seed.x ?? 0) - gx, (seed.z ?? 0) - gz);
-          const taper = 0.2 + 0.8 * Math.exp(-rSeed / 150); // 1.0 core → 0.2 rim
+          const taper = 0.067 + 0.933 * Math.exp(-rSeed / 150); // ~15× core:rim
           for (let i = 0; i < grains; i++) {
             const g1 = () =>
               (Math.random() + Math.random() + Math.random() - 1.5) * layer.sigma;

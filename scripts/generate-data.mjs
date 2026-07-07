@@ -528,8 +528,8 @@ for (const g of GROUPS) {
     n.x = r * Math.cos(theta) + gauss() * scatter;
     n.z = r * Math.sin(theta) + gauss() * scatter;
     // Volumetric disc: thickness tapers from the galactic centre outward, the
-    // centre being 5× thicker than the rim (thick middle → thin edges, #11).
-    const thickness = 4 + 16 * Math.exp(-r / 150); // ~20 at core, ~4 at rim
+    // centre being ~15× thicker than the rim (thick middle → thin edges).
+    const thickness = 2 + 28 * Math.exp(-r / 150); // ~30 at core, ~2 at rim
     n.y = gauss() * thickness;
   });
 }

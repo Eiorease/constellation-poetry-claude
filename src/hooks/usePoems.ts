@@ -4,37 +4,49 @@ export interface Poem {
   title: string;
   lines: string[];
 }
-type PoemMap = Record<string, Poem[]>;
 
-let cache: PoemMap | null = null;
-let inflight: Promise<PoemMap> | null = null;
+// per-poet cache keyed by node id
+const cache = new Map<string, Poem[]>();
+const inflight = new Map<string, Promise<Poem[]>>();
 
-/** Load the real-poems map (public/poems.json) once, lazily and cached. */
-function loadPoems(): Promise<PoemMap> {
-  if (cache) return Promise.resolve(cache);
-  if (!inflight) {
-    inflight = fetch('poems.json')
-      .then((r) => (r.ok ? r.json() : {}))
-      .then((m: PoemMap) => {
-        cache = m;
-        return m;
+function loadPoems(id: string): Promise<Poem[]> {
+  const cached = cache.get(id);
+  if (cached) return Promise.resolve(cached);
+  let p = inflight.get(id);
+  if (!p) {
+    p = fetch(`poems/${id}.json`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((list: Poem[]) => {
+        cache.set(id, list);
+        return list;
       })
-      .catch(() => ({}) as PoemMap);
+      .catch(() => [] as Poem[]);
+    inflight.set(id, p);
   }
-  return inflight;
+  return p;
 }
 
-/** Poems for one poet by name; loads the corpus on first use. */
-export function usePoetPoems(name: string): Poem[] {
-  const [poems, setPoems] = useState<Poem[]>(() => cache?.[name] ?? []);
+/** Complete works for one poet (by node id); fetched on demand and cached. */
+export function usePoetPoems(id: string): { poems: Poem[]; loading: boolean } {
+  const [poems, setPoems] = useState<Poem[]>(() => cache.get(id) ?? []);
+  const [loading, setLoading] = useState(!cache.has(id));
   useEffect(() => {
     let cancelled = false;
-    loadPoems().then((m) => {
-      if (!cancelled) setPoems(m[name] ?? []);
+    if (cache.has(id)) {
+      setPoems(cache.get(id)!);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    loadPoems(id).then((list) => {
+      if (!cancelled) {
+        setPoems(list);
+        setLoading(false);
+      }
     });
     return () => {
       cancelled = true;
     };
-  }, [name]);
-  return poems;
+  }, [id]);
+  return { poems, loading };
 }

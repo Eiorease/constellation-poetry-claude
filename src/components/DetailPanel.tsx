@@ -42,8 +42,8 @@ export function DetailPanel({
     return rows;
   }, [links, node.id, nodeById]);
 
-  // real works pulled from the chinese-poetry corpus (public/poems.json)
-  const poems = usePoetPoems(node.name);
+  // real works pulled from the chinese-poetry corpus (public/poems/<id>.json)
+  const { poems, loading: poemsLoading } = usePoetPoems(node.id);
   const [showAll, setShowAll] = useState(false);
   const [openPoem, setOpenPoem] = useState<Poem | null>(null);
   useEffect(() => {
@@ -107,6 +107,10 @@ export function DetailPanel({
             </div>
           )}
         </dl>
+
+        {poemsLoading && poems.length === 0 && (
+          <p className="text-xs tracking-widest text-ink-400">作品载入中 …</p>
+        )}
 
         {poems.length > 0 && (
           <section>

@@ -603,7 +603,7 @@ function StarMapInner({
     for (let i = 0; i < H_COUNT; i++) {
       dirs.push({ a: Math.random() * Math.PI * 2, len: 0.5 + Math.random() * 0.5 });
     }
-    const h = mkBeams(H_COUNT, 1000, 5000, 260, (i) => {
+    const h = mkBeams(H_COUNT, 1000, 2000, 260, (i) => {
       const { a, len } = dirs[i];
       const tilt = ((Math.random() * 2 - 1) * 7 * Math.PI) / 180; // ±7°
       return {
@@ -614,9 +614,9 @@ function StarMapInner({
       };
     });
     // Vertical hairs sprout from random points ALONG the horizontal rays and
-    // shoot far past the screen edge (#3). Fewer, more widely spaced (#8),
-    // appearing 2–5 s after the horizontals finish, with a 30% slower fade-in.
-    const v = mkBeams(V_COUNT, 7000, 10000, 340, () => {
+    // shoot far past the screen edge (#3). Fewer, more widely spaced (#8);
+    // they appear 1–2 s after the horizontals came out.
+    const v = mkBeams(V_COUNT, 3000, 4000, 340, () => {
       const ray = dirs[Math.floor(Math.random() * dirs.length)];
       // wider, coarser placement along the ray → ~50% larger spacing (#8)
       const at = 0.15 + Math.floor(Math.random() * 6) * 0.15;

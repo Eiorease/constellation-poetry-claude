@@ -135,6 +135,14 @@ export default function App() {
     apiRef.current?.resetCamera();
   }, []);
 
+  // clicking empty space: close detail/link cards AND collapse the filter /
+  // legend panels (#6)
+  const [collapseSignal, setCollapseSignal] = useState(0);
+  const handleBackgroundClick = useCallback(() => {
+    clearSelection();
+    setCollapseSignal((k) => k + 1);
+  }, [clearSelection]);
+
   const handleSearchSelect = useCallback(
     (node: PoetNode) => {
       handleNodeClick(node);
@@ -184,7 +192,7 @@ export default function App() {
         filterTypes={filterTypes}
         onNodeClick={handleNodeClick}
         onLinkClick={handleLinkClick}
-        onBackgroundClick={clearSelection}
+        onBackgroundClick={handleBackgroundClick}
         apiRef={apiRef}
         width={w}
         height={h}
@@ -225,12 +233,13 @@ export default function App() {
           groups={data.groups}
           filters={filters}
           onChange={setFilters}
+          collapseSignal={collapseSignal}
         />
       </div>
 
       {/* Legend (bottom-left) */}
       <div className="pointer-events-none absolute bottom-4 left-4 z-10 sm:bottom-6 sm:left-6">
-        <Legend />
+        <Legend collapseSignal={collapseSignal} />
       </div>
 
       {/* Camera / mode controls (bottom-right) */}

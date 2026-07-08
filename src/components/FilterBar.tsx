@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   RELATION_COLORS,
   type GroupInfo,
@@ -17,6 +17,8 @@ interface Props {
   groups: GroupInfo[];
   filters: Filters;
   onChange: (f: Filters) => void;
+  /** bump to force-collapse (e.g. clicking empty space) */
+  collapseSignal?: number;
 }
 
 function toggle<T>(set: Set<T>, v: T): Set<T> {
@@ -60,8 +62,18 @@ function Chip({
   );
 }
 
-export function FilterBar({ allDynasties, allTypes, groups, filters, onChange }: Props) {
+export function FilterBar({
+  allDynasties,
+  allTypes,
+  groups,
+  filters,
+  onChange,
+  collapseSignal,
+}: Props) {
   const [collapsed, setCollapsed] = useState(true); // collapsed by default
+  useEffect(() => {
+    if (collapseSignal !== undefined) setCollapsed(true);
+  }, [collapseSignal]);
 
   const activeCount = filters.dynasties.size + filters.types.size + filters.groups.size;
 

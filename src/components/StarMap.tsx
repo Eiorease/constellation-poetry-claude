@@ -861,7 +861,7 @@ function StarMapInner({
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-      const S = 42;
+      const S = 21; // WASD nudge distance (−50%)
       if (e.key === 'w' || e.key === 'W') panBy(0, S);
       else if (e.key === 's' || e.key === 'S') panBy(0, -S);
       else if (e.key === 'a' || e.key === 'A') panBy(-S, 0);
@@ -1700,9 +1700,9 @@ function StarMapInner({
       if (burst && burst.group.parent && burst.group.visible) {
         const elapsed = now - burstStartRef.current;
         const base = burstBaseRef.current;
-        // hold until 15 s (vertical hairs finish appearing ~10 s) then fade
+        // beams (appearing ~1–2 s in) fade out 8–10 s after they appear
         const fade =
-          elapsed <= 15000 ? 1 : Math.max(0, 1 - (elapsed - 15000) / 2000);
+          elapsed <= 8000 ? 1 : Math.max(0, 1 - (elapsed - 8000) / 2000);
         burst.beamMatH.uniforms.uElapsed.value = elapsed;
         burst.beamMatV.uniforms.uElapsed.value = elapsed;
         burst.beamMatH.uniforms.uOpacity.value = base.h * fade;

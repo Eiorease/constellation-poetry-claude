@@ -134,7 +134,17 @@ export function DetailPanel({
 
             {/* pagination controls (full-works view, 20 per page) — #4 */}
             {showAll && pageCount > 1 && (
-              <div className="mb-2 flex items-center gap-2 text-[11px] text-ink-300">
+              <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-300">
+                {pageCount > 10 && (
+                  <button
+                    type="button"
+                    disabled={page === 0}
+                    onClick={() => goPage(0)}
+                    className="rounded-full border border-ink-200/15 px-2.5 py-1 tracking-wider hover:text-gold disabled:opacity-30"
+                  >
+                    首页
+                  </button>
+                )}
                 <button
                   type="button"
                   disabled={page === 0}
@@ -154,6 +164,16 @@ export function DetailPanel({
                 >
                   下一页
                 </button>
+                {pageCount > 10 && (
+                  <button
+                    type="button"
+                    disabled={page >= pageCount - 1}
+                    onClick={() => goPage(pageCount - 1)}
+                    className="rounded-full border border-ink-200/15 px-2.5 py-1 tracking-wider hover:text-gold disabled:opacity-30"
+                  >
+                    尾页
+                  </button>
+                )}
                 <form
                   className="ml-auto flex items-center gap-1"
                   onSubmit={(e) => {

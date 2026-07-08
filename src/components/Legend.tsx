@@ -1,10 +1,13 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { RELATION_COLORS, RELATION_LABELS, type RelationType } from '../types';
 
 const TYPES = Object.keys(RELATION_COLORS) as RelationType[];
 
-export function Legend() {
+export function Legend({ collapseSignal }: { collapseSignal?: number }) {
   const [open, setOpen] = useState(false); // collapsed by default
+  useEffect(() => {
+    if (collapseSignal !== undefined) setOpen(false);
+  }, [collapseSignal]);
 
   return (
     <div className="panel pointer-events-auto rounded-2xl px-4 py-3">

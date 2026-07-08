@@ -46,16 +46,29 @@ export function DetailPanel({
   const { poems, loading: poemsLoading } = usePoetPoems(node.id);
   const [showAll, setShowAll] = useState(false);
   const [openPoem, setOpenPoem] = useState<Poem | null>(null);
+  const [page, setPage] = useState(0);
+  const [pageInput, setPageInput] = useState('');
+  const PAGE_SIZE = 20;
+  const pageCount = Math.max(1, Math.ceil(poems.length / PAGE_SIZE));
   useEffect(() => {
     setShowAll(false);
     setOpenPoem(null);
+    setPage(0);
   }, [node.id]);
-  const shownPoems = showAll ? poems : poems.slice(0, 5);
+  const goPage = (p: number) => {
+    const clamped = Math.min(pageCount - 1, Math.max(0, p));
+    setPage(clamped);
+    setOpenPoem(null);
+  };
+  // collapsed: first 5 representative works; expanded: 20-per-page全集 (#4)
+  const shownPoems = showAll
+    ? poems.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE)
+    : poems.slice(0, 5);
 
   return (
     <aside
       aria-label={`${node.name} 详情`}
-      className="panel animate-panel-in pointer-events-auto flex max-h-[70vh] w-full flex-col rounded-t-2xl md:max-h-[calc(100vh-7rem)] md:w-96 md:rounded-2xl"
+      className="panel animate-panel-in pointer-events-auto relative flex max-h-[78vh] w-full flex-col rounded-t-2xl md:max-h-[calc(100vh-7rem)] md:w-96 md:rounded-2xl"
     >
       <header className="flex items-start justify-between px-5 pt-5">
         <div>
@@ -118,6 +131,58 @@ export function DetailPanel({
               <span>{showAll ? '作品全集' : '代表诗作'}</span>
               <span className="text-[10px] text-ink-400/70">共 {poems.length} 首</span>
             </h3>
+
+            {/* pagination controls (full-works view, 20 per page) — #4 */}
+            {showAll && pageCount > 1 && (
+              <div className="mb-2 flex items-center gap-2 text-[11px] text-ink-300">
+                <button
+                  type="button"
+                  disabled={page === 0}
+                  onClick={() => goPage(page - 1)}
+                  className="rounded-full border border-ink-200/15 px-2.5 py-1 tracking-wider hover:text-gold disabled:opacity-30"
+                >
+                  上一页
+                </button>
+                <span className="tracking-wider text-ink-400">
+                  第 {page + 1} / {pageCount} 页
+                </span>
+                <button
+                  type="button"
+                  disabled={page >= pageCount - 1}
+                  onClick={() => goPage(page + 1)}
+                  className="rounded-full border border-ink-200/15 px-2.5 py-1 tracking-wider hover:text-gold disabled:opacity-30"
+                >
+                  下一页
+                </button>
+                <form
+                  className="ml-auto flex items-center gap-1"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const p = parseInt(pageInput, 10);
+                    if (!Number.isNaN(p)) goPage(p - 1);
+                    setPageInput('');
+                  }}
+                >
+                  <input
+                    type="number"
+                    min={1}
+                    max={pageCount}
+                    value={pageInput}
+                    onChange={(e) => setPageInput(e.target.value)}
+                    placeholder="页"
+                    aria-label="跳转到页"
+                    className="w-12 rounded-md bg-ink-800/70 px-2 py-1 text-center text-ink-100 outline-none placeholder-ink-400"
+                  />
+                  <button
+                    type="submit"
+                    className="rounded-md border border-gold/30 px-2 py-1 tracking-wider text-gold/90 hover:bg-gold/10"
+                  >
+                    跳转
+                  </button>
+                </form>
+              </div>
+            )}
+
             <ul className="space-y-1">
               {shownPoems.map((p, i) => {
                 const isOpen = openPoem?.title === p.title;
@@ -146,15 +211,21 @@ export function DetailPanel({
                 );
               })}
             </ul>
-            {poems.length > 5 && (
+            {!showAll && poems.length > 5 && (
               <button
                 type="button"
-                onClick={() => setShowAll((s) => !s)}
+                onClick={() => {
+                  setShowAll(true);
+                  setPage(0);
+                }}
                 className="mt-2.5 w-full rounded-full border border-gold/30 py-1.5 text-xs tracking-widest text-gold/90 hover:bg-gold/10"
               >
-                {showAll ? '收起全集' : `查看全部 ${poems.length} 首作品 →`}
+                查看全部 {poems.length} 首作品 →
               </button>
             )}
+            {/* extra bottom padding so content isn't hidden behind the floating
+                collapse button */}
+            {showAll && <div className="h-12" />}
           </section>
         )}
 
@@ -205,6 +276,17 @@ export function DetailPanel({
           </ul>
         </section>
       </div>
+
+      {/* floating "collapse全集" button pinned near the card bottom (#3) */}
+      {showAll && (
+        <button
+          type="button"
+          onClick={() => setShowAll(false)}
+          className="panel absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-gold/40 px-5 py-2 text-xs tracking-widest text-gold/90 shadow-lg hover:bg-gold/10"
+        >
+          收起全集
+        </button>
+      )}
     </aside>
   );
 }

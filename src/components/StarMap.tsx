@@ -615,8 +615,8 @@ function StarMapInner({
     });
     // Vertical hairs sprout from random points ALONG the horizontal rays and
     // shoot far past the screen edge (#3). Fewer, more widely spaced (#8);
-    // they appear 1–2 s after the horizontals came out.
-    const v = mkBeams(V_COUNT, 3000, 4000, 340, () => {
+    // they now appear ~2 s earlier, close on the heels of the horizontals.
+    const v = mkBeams(V_COUNT, 1000, 2000, 340, () => {
       const ray = dirs[Math.floor(Math.random() * dirs.length)];
       // wider, coarser placement along the ray → ~50% larger spacing (#8)
       const at = 0.15 + Math.floor(Math.random() * 6) * 0.15;
@@ -834,23 +834,28 @@ function StarMapInner({
       notifyInteraction();
     };
 
-    // Trackpad: two-finger swipe pans (was zoom); pinch (ctrl+wheel) zooms.
-    controls.enableZoom = false; // we handle wheel ourselves
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      if (e.ctrlKey) {
-        // pinch-zoom → dolly the camera toward / away from the target
-        const cam = fg.camera();
-        const dir = new THREE.Vector3().subVectors(cam.position, controls.target);
-        dir.multiplyScalar(Math.exp(e.deltaY * 0.01));
-        cam.position.copy(controls.target).add(dir);
-        controls.update();
-        notifyInteraction();
-      } else {
-        panBy(e.deltaX, e.deltaY);
-      }
+    // Touchscreen pinch keeps zooming via OrbitControls (native two-finger
+    // dolly). We only customise the WHEEL (trackpad / mouse): a window-level
+    // capture listener intercepts wheel over the canvas BEFORE OrbitControls
+    // sees it, so a two-finger swipe pans and a pinch (ctrl+wheel) zooms —
+    // consistent with the touchscreen behaviour.
+    controls.enableZoom = true; // touch pinch-zoom stays enabled
+    const dollyWheel = (deltaY: number) => {
+      const cam = fg.camera();
+      const dir = new THREE.Vector3().subVectors(cam.position, controls.target);
+      dir.multiplyScalar(Math.exp(deltaY * 0.01));
+      cam.position.copy(controls.target).add(dir);
+      controls.update();
+      notifyInteraction();
     };
-    dom.addEventListener('wheel', onWheel, { passive: false });
+    const onWheel = (e: WheelEvent) => {
+      if (!dom.contains(e.target as Node)) return; // let UI panels scroll
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.ctrlKey) dollyWheel(e.deltaY); // trackpad pinch → zoom
+      else panBy(e.deltaX, e.deltaY); // two-finger swipe → pan
+    };
+    window.addEventListener('wheel', onWheel, { capture: true, passive: false });
 
     // WASD nudges the nebula: W up, A left, S down, D right.
     const onKey = (e: KeyboardEvent) => {
@@ -885,7 +890,7 @@ function StarMapInner({
       document.removeEventListener('visibilitychange', onVisible);
       controls.removeEventListener('start', onControlsActivity);
       dom.removeEventListener('pointerdown', onControlsActivity);
-      dom.removeEventListener('wheel', onWheel);
+      window.removeEventListener('wheel', onWheel, { capture: true });
       window.removeEventListener('keydown', onKey);
       bloomRef.current = null;
       fg.postProcessingComposer().removePass(bloom);

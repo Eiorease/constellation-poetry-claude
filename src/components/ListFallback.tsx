@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { DetailPanel } from './DetailPanel';
+import { PoemCard } from './PoemCard';
+import type { Poem } from '../hooks/usePoems';
 import { endpointId, type GraphData, type PoemLink, type PoetNode } from '../types';
 
 interface Props {
@@ -21,6 +23,7 @@ export function ListFallback({ data, onBackTo3D }: Props) {
   const [pageInput, setPageInput] = useState('');
   const [showTop, setShowTop] = useState(false);
   const [selected, setSelected] = useState<PoetNode | null>(null);
+  const [openPoem, setOpenPoem] = useState<Poem | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const nodeById = useMemo(() => new Map(data.nodes.map((n) => [n.id, n])), [data.nodes]);
@@ -197,18 +200,44 @@ export function ListFallback({ data, onBackTo3D }: Props) {
         </button>
       )}
 
-      {/* detail card overlay — same component as the 3D view (#2) */}
+      {/* detail card overlay — same component as the 3D view (#2). Tapping a
+          poem opens its full text in a side card on the right (#2). */}
       {selected && (
-        <div className="fixed inset-0 z-30 flex items-end justify-center bg-ink-950/60 p-0 backdrop-blur-sm md:items-center md:p-6">
-          <DetailPanel
-            node={selected}
-            links={data.links}
-            nodeById={nodeById}
-            groups={data.groups}
-            onSelectNode={(node) => setSelected(node)}
-            onSelectLink={(_l: PoemLink) => {}}
-            onClose={() => setSelected(null)}
-          />
+        <div
+          className="fixed inset-0 z-30 flex items-end justify-center gap-4 bg-ink-950/60 p-0 backdrop-blur-sm md:items-center md:p-6"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setSelected(null);
+              setOpenPoem(null);
+            }
+          }}
+        >
+          {/* on mobile only one card shows at a time (detail ↔ poem); on
+              desktop the poem opens as a side card to the right */}
+          <div className={`w-full md:block md:w-auto ${openPoem ? 'hidden md:block' : 'block'}`}>
+            <DetailPanel
+              node={selected}
+              links={data.links}
+              nodeById={nodeById}
+              groups={data.groups}
+              onSelectNode={(node) => {
+                setSelected(node);
+                setOpenPoem(null);
+              }}
+              onSelectLink={(_l: PoemLink) => {}}
+              onClose={() => {
+                setSelected(null);
+                setOpenPoem(null);
+              }}
+              onOpenPoem={(p) => setOpenPoem(p)}
+              activePoemTitle={openPoem?.title}
+            />
+          </div>
+          {openPoem && (
+            <div className="w-full md:w-auto">
+              <PoemCard poem={openPoem} author={selected.name} onClose={() => setOpenPoem(null)} />
+            </div>
+          )}
         </div>
       )}
     </div>

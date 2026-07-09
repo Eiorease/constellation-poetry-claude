@@ -143,6 +143,12 @@ export default function App() {
     setCollapseSignal((k) => k + 1);
   }, [clearSelection]);
 
+  const handleRandom = useCallback(() => {
+    const nodes = data?.nodes ?? [];
+    if (!nodes.length) return;
+    handleNodeClick(nodes[Math.floor(Math.random() * nodes.length)]);
+  }, [data, handleNodeClick]);
+
   const handleSearchSelect = useCallback(
     (node: PoetNode) => {
       handleNodeClick(node);
@@ -220,13 +226,14 @@ export default function App() {
         </div>
       </header>
 
-      {/* Dynasty quick-select (top centre, scrollable on small screens) */}
-      <div className="pointer-events-none absolute inset-x-0 top-16 z-10 flex justify-center px-3 sm:top-20">
+      {/* Dynasty quick-select — centred, vertically aligned with the search
+          bar on desktop; below the stacked header on mobile (#3) */}
+      <div className="pointer-events-none absolute inset-x-0 top-28 z-10 flex justify-center px-3 sm:top-6">
         <DynastyBar allDynasties={allDynasties} filters={filters} onChange={setFilters} />
       </div>
 
-      {/* Filters (top-left, below header on mobile) */}
-      <div className="pointer-events-none absolute left-4 top-32 z-10 sm:left-6 sm:top-32">
+      {/* Filters (top-left) + random button (top-right), same row (#4) */}
+      <div className="pointer-events-none absolute left-4 top-40 z-10 sm:left-6 sm:top-32">
         <FilterBar
           allDynasties={allDynasties}
           allTypes={allTypes}
@@ -235,6 +242,16 @@ export default function App() {
           onChange={setFilters}
           collapseSignal={collapseSignal}
         />
+      </div>
+      <div className="pointer-events-none absolute right-4 top-40 z-10 sm:right-6 sm:top-32">
+        <button
+          type="button"
+          onClick={handleRandom}
+          className="panel pointer-events-auto rounded-full px-4 py-2 text-xs tracking-[0.25em] text-ink-200 hover:text-gold"
+          title="随机选中一颗星辰"
+        >
+          ✦ 随机星辰
+        </button>
       </div>
 
       {/* Legend (bottom-left) */}

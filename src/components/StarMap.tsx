@@ -603,7 +603,7 @@ function StarMapInner({
     for (let i = 0; i < H_COUNT; i++) {
       dirs.push({ a: Math.random() * Math.PI * 2, len: 0.5 + Math.random() * 0.5 });
     }
-    const h = mkBeams(H_COUNT, 1000, 2000, 260, (i) => {
+    const h = mkBeams(H_COUNT, 1000, 2000, 700, (i) => {
       const { a, len } = dirs[i];
       const tilt = ((Math.random() * 2 - 1) * 7 * Math.PI) / 180; // ±7°
       return {
@@ -616,7 +616,7 @@ function StarMapInner({
     // Vertical hairs sprout from random points ALONG the horizontal rays and
     // shoot far past the screen edge (#3). Fewer, more widely spaced (#8);
     // they now appear ~2 s earlier, close on the heels of the horizontals.
-    const v = mkBeams(V_COUNT, 1000, 2000, 340, () => {
+    const v = mkBeams(V_COUNT, 1000, 2000, 700, () => {
       const ray = dirs[Math.floor(Math.random() * dirs.length)];
       // wider, coarser placement along the ray → ~50% larger spacing (#8)
       const at = 0.15 + Math.floor(Math.random() * 6) * 0.15;
@@ -1069,9 +1069,9 @@ function StarMapInner({
         burst.glow.color.copy(tierColor);
         burst.glow.opacity = op * 0.5;
         burst.glowSprite.scale.set(scale * 0.55, scale * 0.55, 1);
-        // beams appear gradually (uElapsed driven by the tick); per-beam
-        // appear-time + opacity boost live in the shader attributes (#12/#13)
-        const beamOp = Math.min(1, op * 0.95 * 1.4); // opacity +40% (#5)
+        // beams fade in gradually (longer per-beam appear window); opacity
+        // raised +40% — additive, so it may exceed 1 to brighten the lines
+        const beamOp = op * 0.95 * 1.4;
         for (const bm of [burst.beamMatH, burst.beamMatV]) {
           bm.uniforms.uColor.value.copy(tierColor);
           bm.uniforms.uOpacity.value = beamOp;

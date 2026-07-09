@@ -16,6 +16,10 @@ interface Props {
   onSelectNode: (node: PoetNode) => void;
   onSelectLink: (link: PoemLink) => void;
   onClose: () => void;
+  /** if provided, tapping a poem opens it externally (a side card) instead of
+   *  expanding inline; the active poem is highlighted */
+  onOpenPoem?: (poem: Poem) => void;
+  activePoemTitle?: string;
 }
 
 export function DetailPanel({
@@ -26,6 +30,8 @@ export function DetailPanel({
   onSelectNode,
   onSelectLink,
   onClose,
+  onOpenPoem,
+  activePoemTitle,
 }: Props) {
   const group = groups.find((g) => g.id === node.group);
 
@@ -205,20 +211,28 @@ export function DetailPanel({
 
             <ul className="space-y-1">
               {shownPoems.map((p, i) => {
-                const isOpen = openPoem?.title === p.title;
+                const external = Boolean(onOpenPoem);
+                const isOpen = external
+                  ? activePoemTitle === p.title
+                  : openPoem?.title === p.title;
                 return (
-                  <li key={`${p.title}-${i}`} className="rounded-lg bg-ink-800/40">
+                  <li
+                    key={`${p.title}-${i}`}
+                    className={`rounded-lg ${isOpen ? 'bg-gold/10' : 'bg-ink-800/40'}`}
+                  >
                     <button
                       type="button"
-                      onClick={() => setOpenPoem(isOpen ? null : p)}
+                      onClick={() =>
+                        external ? onOpenPoem!(p) : setOpenPoem(isOpen ? null : p)
+                      }
                       className="flex w-full items-baseline justify-between gap-2 px-3 py-2 text-left"
                     >
                       <span className="text-sm tracking-wider text-moon">《{p.title}》</span>
                       <span className="shrink-0 text-[11px] text-ink-400">
-                        {isOpen ? '收起' : '展开'}
+                        {external ? '查看' : isOpen ? '收起' : '展开'}
                       </span>
                     </button>
-                    {isOpen && (
+                    {!external && isOpen && (
                       <div className="border-l-2 border-gold/30 px-3 pb-3 pl-3">
                         {p.lines.map((line, li) => (
                           <p key={li} className="text-[13px] leading-7 text-ink-100">
